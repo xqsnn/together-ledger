@@ -47,6 +47,7 @@ import { MonthPicker } from '@/components/month-picker';
 import { DatePicker } from '@/components/date-picker';
 import { Segmented } from '@/components/segmented';
 import { SlidingNav } from '@/components/sliding-nav';
+import { useIsomorphicLayoutEffect } from '@/hooks/use-isomorphic-layout-effect';
 
 type OwnerInfo = { key: OwnerKey; name: string };
 type Ledger = {
@@ -137,6 +138,7 @@ export default function Home() {
   const [toastLeaving, setToastLeaving] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const deleteRef = useRef<HTMLDialogElement>(null);
+  const trendScrollRef = useRef<HTMLDivElement>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastOutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -315,6 +317,14 @@ export default function Home() {
   const hasRecordFilters = type !== 'all' || owner !== '全部' || categoryFilter !== '全部';
   const filterCategories = type === 'all' ? Array.from(new Set([...data.categories.expense, ...data.categories.income])) : data.categories[type];
   const typeLabel = type === 'all' ? '全部收支' : type === 'income' ? '收入' : '支出';
+
+  // 趋势图默认定位到最近的日期，避免最新几天被横向滚动藏在右侧。
+  useIsomorphicLayoutEffect(() => {
+    if (view !== 'analysis') return;
+    const container = trendScrollRef.current;
+    if (!container) return;
+    container.scrollLeft = container.scrollWidth;
+  }, [view, month, analysisOwner, recordedDays]);
 
   function selectDay(value: string) {
     if (value < '1900-01-01' || value > data.today) return;
@@ -844,40 +854,40 @@ export default function Home() {
         </section>
         <div className="analysis-highlight"><span>支出最高日</span><strong>{maxExpenseDay ? `¥ ${money(maxExpenseDay.expense)}` : '—'}</strong><small>{maxExpenseDay ? `${dateLabel(maxExpenseDay.date)} · 星期${dayOfWeek(maxExpenseDay.date)}` : '当月尚无支出记录'}</small></div>
         <div className="analysis-grid">
-          <section className="analysis-trend panel">
-            <div className="section-head"><div><h2>每天的收支趋势</h2></div><TrendingUp size={20} aria-hidden="true" /></div>
-            {recordedDays ? <><div className="trend-scroll" tabIndex={0} role="region" aria-label="每日收支柱状图，可横向滚动"><div className="trend-chart">{trendDays.map((item, index) => <button className="trend-column" key={item.date} aria-pressed={trendSelection.date === item.date} aria-label={`${item.date}，${item.count ? `收入${money(item.income)}元，支出${money(item.expense)}元` : '尚无记录'}`} title={`${dateLabel(item.date)}：收入 ¥${money(item.income)} / 支出 ¥${money(item.expense)}`} onClick={() => setTrendDay(item.date)}><span className="trend-bars" aria-hidden="true"><span className="trend-bar income" style={{ height: `${item.income / maxDailyAmount * 100}%`, animationDelay: `${Math.min(index, 24) * 16}ms` }} /><span className="trend-bar expense" style={{ height: `${item.expense / maxDailyAmount * 100}%`, animationDelay: `${Math.min(index, 24) * 16}ms` }} /></span><small>{Number(item.date.slice(8))}</small></button>)}</div></div><div className="trend-readout" aria-live="polite"><strong>{dateLabel(trendSelection.date)}</strong><span>{trendSelection.count ? `收入 ¥${money(trendSelection.income)} · 支出 ¥${money(trendSelection.expense)}` : '尚无记录'}</span><button className="text-button" onClick={() => { selectDay(trendSelection.date); setOwner(analysisOwner); setType('all'); setRecordMode('calendar'); goTo('records'); }}>查看当天<ArrowRight size={15} /></button></div></> : <div className="empty"><BarChart3 size={28} /><h3>当月还没有记录</h3><p>记录收入和支出后，即可查看每天的变化。</p></div>}
-            <div className="trend-legend"><span><i className="legend-income" />收入</span><span><i className="legend-expense" />支出</span><span>共 {elapsedDays} 天</span></div>
-            {recordedDays > 0 && <details className="analysis-table"><summary>查看每日数据</summary><div className="table-scroll"><table><caption>{monthLabel} · {analysisOwner === '全部' ? '全部归属' : analysisOwner}</caption><thead><tr><th scope="col">日期</th><th scope="col">收入</th><th scope="col">支出</th><th scope="col">结余</th><th scope="col">记录</th></tr></thead><tbody>{trendDays.map((item) => <tr key={item.date}><th scope="row">{dateLabel(item.date)}</th><td>{item.count ? money(item.income) : '—'}</td><td>{item.count ? money(item.expense) : '—'}</td><td>{item.count ? money(item.surplus) : '—'}</td><td>{item.count ? `${item.count} 笔` : '未记录'}</td></tr>)}</tbody></table></div></details>}
-          </section>
           <section className="analysis-owner panel"><div className="section-head"><div><h2>按归属看收支</h2></div><Users size={20} aria-hidden="true" /></div><div className="owner-analysis-list">{monthStats.byOwner.filter((item) => analysisOwner === '全部' || item.owner === analysisOwner).map((item) => { const photo = photoForOwner(item.owner); return <div className="owner-analysis-row" key={item.owner}><div className={`owner-avatar ${classForOwner(item.owner)}${photo ? ' has-photo' : ''}`} style={photo ? { backgroundImage: `url(${photo})` } : undefined}>{photo ? null : ownerKeyByName.get(item.owner) === 'together' ? <Users size={17} /> : <UserRound size={17} />}</div><span>{item.owner}</span><div className="owner-analysis-values"><strong>收入 ¥ {money(item.income)}</strong><strong>支出 ¥ {money(item.expense)}</strong><small>占当月支出 {monthStats.expense ? Math.round(item.expense / monthStats.expense * 100) : 0}%</small></div></div>; })}</div></section>
+          <section className="analysis-categories panel">
+            <div className="section-head"><div><h2>分类占比</h2></div><PieChart size={20} aria-hidden="true" /></div>
+            <div className="category-breakdown">
+              <div className="category-block">
+                <h3>支出</h3>
+                {expenseBreakdown.length ? expenseBreakdown.map((item) => (
+                  <div className="category-row" key={item.category}>
+                    <span className="category-name">{item.category}</span>
+                    <span className="category-track"><i style={{ width: `${monthStats.expense ? item.amount / monthStats.expense * 100 : 0}%` }} /></span>
+                    <strong>¥ {money(item.amount)}</strong>
+                    <small>{monthStats.expense ? Math.round(item.amount / monthStats.expense * 100) : 0}%</small>
+                  </div>
+                )) : <p className="category-empty">当月暂无支出</p>}
+              </div>
+              <div className="category-block">
+                <h3>收入</h3>
+                {incomeBreakdown.length ? incomeBreakdown.map((item) => (
+                  <div className="category-row" key={item.category}>
+                    <span className="category-name">{item.category}</span>
+                    <span className="category-track"><i style={{ width: `${monthStats.income ? item.amount / monthStats.income * 100 : 0}%` }} /></span>
+                    <strong>¥ {money(item.amount)}</strong>
+                    <small>{monthStats.income ? Math.round(item.amount / monthStats.income * 100) : 0}%</small>
+                  </div>
+                )) : <p className="category-empty">当月暂无收入</p>}
+              </div>
+            </div>
+          </section>
         </div>
-        <section className="analysis-categories panel">
-          <div className="section-head"><div><h2>分类占比</h2></div><PieChart size={20} aria-hidden="true" /></div>
-          <div className="category-breakdown">
-            <div className="category-block">
-              <h3>支出</h3>
-              {expenseBreakdown.length ? expenseBreakdown.map((item) => (
-                <div className="category-row" key={item.category}>
-                  <span className="category-name">{item.category}</span>
-                  <span className="category-track"><i style={{ width: `${monthStats.expense ? item.amount / monthStats.expense * 100 : 0}%` }} /></span>
-                  <strong>¥ {money(item.amount)}</strong>
-                  <small>{monthStats.expense ? Math.round(item.amount / monthStats.expense * 100) : 0}%</small>
-                </div>
-              )) : <p className="category-empty">当月暂无支出</p>}
-            </div>
-            <div className="category-block">
-              <h3>收入</h3>
-              {incomeBreakdown.length ? incomeBreakdown.map((item) => (
-                <div className="category-row" key={item.category}>
-                  <span className="category-name">{item.category}</span>
-                  <span className="category-track"><i style={{ width: `${monthStats.income ? item.amount / monthStats.income * 100 : 0}%` }} /></span>
-                  <strong>¥ {money(item.amount)}</strong>
-                  <small>{monthStats.income ? Math.round(item.amount / monthStats.income * 100) : 0}%</small>
-                </div>
-              )) : <p className="category-empty">当月暂无收入</p>}
-            </div>
-          </div>
+        <section className="analysis-trend panel">
+          <div className="section-head"><div><h2>每天的收支趋势</h2></div><TrendingUp size={20} aria-hidden="true" /></div>
+          {recordedDays ? <><div className="trend-scroll" ref={trendScrollRef} tabIndex={0} role="region" aria-label="每日收支柱状图，可横向滚动"><div className="trend-chart">{trendDays.map((item, index) => <button className="trend-column" key={item.date} aria-pressed={trendSelection.date === item.date} aria-label={`${item.date}，${item.count ? `收入${money(item.income)}元，支出${money(item.expense)}元` : '尚无记录'}`} title={`${dateLabel(item.date)}：收入 ¥${money(item.income)} / 支出 ¥${money(item.expense)}`} onClick={() => setTrendDay(item.date)}><span className="trend-bars" aria-hidden="true"><span className="trend-bar income" style={{ height: `${item.income / maxDailyAmount * 100}%`, animationDelay: `${Math.min(index, 24) * 16}ms` }} /><span className="trend-bar expense" style={{ height: `${item.expense / maxDailyAmount * 100}%`, animationDelay: `${Math.min(index, 24) * 16}ms` }} /></span><small>{Number(item.date.slice(8))}</small></button>)}</div></div><div className="trend-readout" aria-live="polite"><strong>{dateLabel(trendSelection.date)}</strong><span>{trendSelection.count ? `收入 ¥${money(trendSelection.income)} · 支出 ¥${money(trendSelection.expense)}` : '尚无记录'}</span><button className="text-button" onClick={() => { selectDay(trendSelection.date); setOwner(analysisOwner); setType('all'); setRecordMode('calendar'); goTo('records'); }}>查看当天<ArrowRight size={15} /></button></div></> : <div className="empty"><BarChart3 size={28} /><h3>当月还没有记录</h3><p>记录收入和支出后，即可查看每天的变化。</p></div>}
+          <div className="trend-legend"><span><i className="legend-income" />收入</span><span><i className="legend-expense" />支出</span><span>共 {elapsedDays} 天</span></div>
+          {recordedDays > 0 && <details className="analysis-table"><summary>查看每日数据</summary><div className="table-scroll"><table><caption>{monthLabel} · {analysisOwner === '全部' ? '全部归属' : analysisOwner}</caption><thead><tr><th scope="col">日期</th><th scope="col">收入</th><th scope="col">支出</th><th scope="col">结余</th><th scope="col">记录</th></tr></thead><tbody>{trendDays.map((item) => <tr key={item.date}><th scope="row">{dateLabel(item.date)}</th><td>{item.count ? money(item.income) : '—'}</td><td>{item.count ? money(item.expense) : '—'}</td><td>{item.count ? money(item.surplus) : '—'}</td><td>{item.count ? `${item.count} 笔` : '未记录'}</td></tr>)}</tbody></table></div></details>}
         </section>
         </section>
       </>
