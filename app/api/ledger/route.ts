@@ -2,9 +2,12 @@ import { env } from 'cloudflare:workers';
 import { chinaToday, MAX_CENTS, validateEntry } from '@/lib/ledger';
 export const dynamic='force-dynamic';
 // This is one shared ledger. Sites' private access boundary authorizes all admitted visitors.
+// Old rows still store the previous owner names; normalize them on read.
+const OWNER_ALIASES:Record<string,string>={'男生':'青','女生':'伊'};
+type EntryRow={id:string;type:string;amount:number;owner:string;date:string;note:string;revision:number;created_at:string};
 function db(){if(!env.DB)throw new Error('账本暂时无法连接，请稍后重试');return env.DB;}
 function reply(data:unknown,status=200){return Response.json(data,{status,headers:{'Cache-Control':'no-store'}});}
-async function read(){const database=db();const [rows,setting]=await Promise.all([database.prepare('SELECT * FROM entries ORDER BY date DESC, created_at DESC, id DESC').all(),database.prepare("SELECT opening, revision FROM settings WHERE id = 'ledger'").first()]);return {entries:rows.results.map((r:any)=>({...r,createdAt:r.created_at})),opening:setting?.opening??0,settingsRevision:setting?.revision??0,today:chinaToday()};}
+async function read(){const database=db();const [rows,setting]=await Promise.all([database.prepare('SELECT * FROM entries ORDER BY date DESC, created_at DESC, id DESC').all(),database.prepare("SELECT opening, revision FROM settings WHERE id = 'ledger'").first()]);return {entries:(rows.results as EntryRow[]).map((r)=>({...r,owner:OWNER_ALIASES[r.owner]??r.owner,createdAt:r.created_at})),opening:setting?.opening??0,settingsRevision:setting?.revision??0,today:chinaToday()};}
 export async function GET(){try{return reply(await read());}catch(e){console.error(e);return reply({error:'账本暂时无法连接，请重试'},503);}}
 export async function POST(request:Request){if(!request.headers.get('content-type')?.includes('application/json'))return reply({error:'请求格式无效'},415);try{
  const b=await request.json() as any;const database=db();

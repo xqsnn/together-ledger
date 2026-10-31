@@ -9,30 +9,30 @@ for(const n of ['0','-1','1.234','1e2','NaN'])assert.throws(()=>toCents(n));
 assert.equal(chinaToday(new Date('2026-10-31T16:00:00Z')),'2026-11-01');
 assert.equal(chinaToday(new Date('2026-10-31T15:59:59Z')),'2026-10-31');
 const make=(id,type,amount,owner,date)=>({id,type,amount,owner,date,note:'',revision:1,createdAt:''});
-const entries=[make('1','income',10000,'男生','2026-10-01'),make('2','income',20000,'女生','2026-10-02'),make('3','expense',6000,'共同','2026-10-03'),make('4','expense',1000,'男生','2026-09-30')];
+const entries=[make('1','income',10000,'青','2026-10-01'),make('2','income',20000,'伊','2026-10-02'),make('3','expense',6000,'共同','2026-10-03'),make('4','expense',1000,'青','2026-09-30')];
 const s=totals(entries,'2026-10',50000);assert.equal(s.balance,73000);assert.equal(s.income,30000);assert.equal(s.expense,6000);assert.equal(s.surplus,24000);assert.equal(s.byOwner.reduce((n,o)=>n+o.expense,0),6000);
 assert.equal(totals(entries,'2026-11',50000).balance,s.balance);assert.equal(totals(entries,'2026-11',50000).surplus,0);
 assert.equal(totals(entries.filter(e=>e.id!=='3'),'2026-10',50000).balance,79000);
 assert.equal(totals(entries.map(e=>e.id==='3'?{...e,amount:7000}:e),'2026-10',50000).expense,7000);
 assert.equal(totals([],'2026-10',50000).income,0);
 const dailyEntries=[
- make('d1','income',10001,'男生','2026-10-31'),
+ make('d1','income',10001,'青','2026-10-31'),
  make('d2','expense',1,'共同','2026-10-01'),
- make('d3','expense',10,'女生','2026-10-31'),
- make('d4','income',2,'女生','2026-10-31'),
- make('d5','expense',1,'女生','2026-10-31'),
- make('d6','expense',999,'女生','2026-09-30'),
- make('d7','income',999,'女生','2026-11-01'),
+ make('d3','expense',10,'伊','2026-10-31'),
+ make('d4','income',2,'伊','2026-10-31'),
+ make('d5','expense',1,'伊','2026-10-31'),
+ make('d6','expense',999,'伊','2026-09-30'),
+ make('d7','income',999,'伊','2026-11-01'),
 ];
 const snapshot=JSON.stringify(dailyEntries);
 assert.deepEqual(dailyTotals(dailyEntries,'2026-10'),[
  {date:'2026-10-01',income:0,expense:1,surplus:-1,count:1},
  {date:'2026-10-31',income:10003,expense:11,surplus:9992,count:4},
 ]);
-assert.deepEqual(dailyTotals(dailyEntries,'2026-10',{owner:'女生',type:'expense'}),[
+assert.deepEqual(dailyTotals(dailyEntries,'2026-10',{owner:'伊',type:'expense'}),[
  {date:'2026-10-31',income:0,expense:11,surplus:-11,count:2},
 ]);
-assert.deepEqual(dailyTotals(dailyEntries,'2026-10',{owner:'女生'}),[
+assert.deepEqual(dailyTotals(dailyEntries,'2026-10',{owner:'伊'}),[
  {date:'2026-10-31',income:2,expense:11,surplus:-9,count:3},
 ]);
 assert.deepEqual(dailyTotals(dailyEntries,'2026-10',{type:'income'}),[

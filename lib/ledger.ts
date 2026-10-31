@@ -1,8 +1,8 @@
-export type Owner = '男生' | '女生' | '共同';
+export type Owner = '青' | '伊' | '共同';
 export type Entry = { id:string; type:'income'|'expense'; amount:number; owner:Owner; date:string; note:string; revision:number; createdAt:string };
 export type LedgerFilter = { type?: Entry['type']|'all'; owner?: Owner|'全部' };
 export type DailyTotal = { date:string; income:number; expense:number; surplus:number; count:number };
-export const owners:Owner[] = ['男生','女生','共同'];
+export const owners:Owner[] = ['青','伊','共同'];
 export const MAX_CENTS = 99999999999;
 export function chinaToday(now = new Date()) { return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(now); }
 export function toCents(value:string, allowZero=false) {
