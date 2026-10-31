@@ -9,7 +9,6 @@ import {
   BarChart3,
   BookHeart,
   CalendarDays,
-  Camera,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -900,11 +899,29 @@ export default function Home() {
   }
   /* eslint-enable react-hooks/refs */
 
+  /* eslint-disable react-hooks/refs -- 上传回调只在选择文件后执行，不会在渲染期间读取 ref */
   function renderSettings() {
-    // 上传回调只在选择文件后执行，不会在渲染期间读取 ref。
-    // eslint-disable-next-line react-hooks/refs
-    return <div className="settings-panel panel"><div className="section-head"><h2>账本设置</h2><BookHeart size={20} /></div><div className="setting-row owner-setting"><div><h3>记账归属</h3></div><div className="owner-avatars">{data.owners.map((item) => { const photo = data.avatars?.[item.name] ?? (item.key === 'hua' ? '/huang.jpg' : ''); return <div className="owner-avatar-item" key={item.key}><label className={`owner-avatar-upload ${ownerClass(item.key)}`} aria-label={`上传${item.name}的头像`} aria-busy={avatarBusy === item.name}>{photo ? <span className="owner-avatar-image" style={{ backgroundImage: `url(${photo})` }} /> : <UserRound size={22} />}<Camera size={12} className="owner-avatar-camera" /><input type="file" accept="image/*" className="avatar-input" disabled={avatarBusy === item.name} onChange={(event) => chooseAvatar(event, item.name)} /></label>{editingOwner === item.key ? <div className="owner-name-editor"><input value={ownerNameDraft} maxLength={8} autoFocus onChange={(event) => setOwnerNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void saveOwnerName(item.key); } else if (event.key === 'Escape') setEditingOwner(null); }} /><button type="button" aria-label="保存名字" disabled={ownerBusy === item.key} onClick={() => void saveOwnerName(item.key)}><Check size={13} /></button><button type="button" aria-label="取消" onClick={() => setEditingOwner(null)}><X size={13} /></button></div> : <div className="owner-name-row"><span className="owner-avatar-name">{item.name}</span><button type="button" className="owner-name-edit" aria-label={`编辑${item.name}的名字`} onClick={() => startEditOwner(item)}><Pencil size={12} /></button></div>}</div>; })}</div></div><div className="setting-row"><div><h3>分类管理</h3></div><button className="outline-button" onClick={openCategories}>编辑分类</button></div><div className="setting-row"><div><h3>共享账本</h3></div><button className="outline-button share-button" onClick={() => setModal('share')}><LinkIcon size={15} />账本链接</button></div></div>;
+    return <div className="settings-panel panel">
+      <div className="section-head"><h2>账本设置</h2><BookHeart size={20} /></div>
+      <div className="setting-row owner-setting">
+        <div className="setting-copy"><h3>记账归属</h3><p>点击头像上传照片，点击名字修改称呼</p></div>
+        <div className="owner-avatars">{data.owners.map((item) => {
+          const photo = data.avatars?.[item.name] ?? (item.key === 'hua' ? '/huang.jpg' : '');
+          return <div className="owner-avatar-item" key={item.key}>
+            <label className={`owner-avatar-upload ${ownerClass(item.key)}`} aria-label={`上传${item.name}的头像`} aria-busy={avatarBusy === item.name}>
+              {photo ? <span className="owner-avatar-image" style={{ backgroundImage: `url(${photo})` }} /> : <UserRound size={22} />}
+              <span className="owner-avatar-hint">{photo ? '更换' : '上传'}</span>
+              <input type="file" accept="image/*" className="avatar-input" disabled={avatarBusy === item.name} onChange={(event) => chooseAvatar(event, item.name)} />
+            </label>
+            {editingOwner === item.key ? <div className="owner-name-editor"><input value={ownerNameDraft} maxLength={8} autoFocus onChange={(event) => setOwnerNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void saveOwnerName(item.key); } else if (event.key === 'Escape') setEditingOwner(null); }} /><button type="button" aria-label="保存名字" disabled={ownerBusy === item.key} onClick={() => void saveOwnerName(item.key)}><Check size={13} /></button><button type="button" aria-label="取消" onClick={() => setEditingOwner(null)}><X size={13} /></button></div> : <button type="button" className="owner-name-button" aria-label={`编辑${item.name}的名字`} onClick={() => startEditOwner(item)}><span className="owner-avatar-name">{item.name}</span></button>}
+          </div>;
+        })}</div>
+      </div>
+      <div className="setting-row"><div className="setting-copy"><h3>分类管理</h3><p>增删改支出与收入的分类</p></div><button className="outline-button" onClick={openCategories}>编辑分类</button></div>
+      <div className="setting-row"><div className="setting-copy"><h3>共享账本</h3><p>把同一个链接发给对方</p></div><button className="outline-button share-button" onClick={() => setModal('share')}><LinkIcon size={15} />账本链接</button></div>
+    </div>;
   }
+  /* eslint-enable react-hooks/refs */
 
   const viewLabel: Record<View, string> = { today: '今天', records: '账目', analysis: '分析', settings: '账本设置' };
   const heading: Record<View, string> = {
