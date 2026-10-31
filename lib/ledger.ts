@@ -1,5 +1,7 @@
 export type Owner = '男生' | '女生' | '共同';
 export type Entry = { id:string; type:'income'|'expense'; amount:number; owner:Owner; date:string; note:string; revision:number; createdAt:string };
+export type LedgerFilter = { type?: Entry['type']|'all'; owner?: Owner|'全部' };
+export type DailyTotal = { date:string; income:number; expense:number; surplus:number; count:number };
 export const owners:Owner[] = ['男生','女生','共同'];
 export const MAX_CENTS = 99999999999;
 export function chinaToday(now = new Date()) { return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(now); }
@@ -23,4 +25,15 @@ export function totals(entries:Entry[],month:string,opening=0) {
  const sum=(a:Entry[],type:string)=>a.filter(e=>e.type===type).reduce((n,e)=>n+e.amount,0);
  const income=sum(monthly,'income'),expense=sum(monthly,'expense');
  return {balance:opening+sum(entries,'income')-sum(entries,'expense'),income,expense,surplus:income-expense,byOwner:owners.map(owner=>({owner,income:sum(monthly.filter(e=>e.owner===owner),'income'),expense:sum(monthly.filter(e=>e.owner===owner),'expense')}))};
+}
+export function dailyTotals(entries:Entry[],month:string,filter:LedgerFilter={}) {
+ const grouped=new Map<string,DailyTotal>();
+ entries.filter(e=>e.date.startsWith(month)&&(filter.type===undefined||filter.type==='all'||e.type===filter.type)&&(filter.owner===undefined||filter.owner==='全部'||e.owner===filter.owner)).forEach(e=>{
+  const current=grouped.get(e.date)??{date:e.date,income:0,expense:0,surplus:0,count:0};
+  current[e.type]+=e.amount;
+  current.surplus=current.income-current.expense;
+  current.count+=1;
+  grouped.set(e.date,current);
+ });
+ return Array.from(grouped.values()).sort((a,b)=>a.date.localeCompare(b.date));
 }
