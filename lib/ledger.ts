@@ -1,8 +1,8 @@
 export type OwnerKey = 'qing' | 'hua' | 'together';
 export type Owner = string;
 export const ownerKeys:OwnerKey[] = ['qing','hua','together'];
-export type Entry = { id:string; type:'income'|'expense'; amount:number; owner:Owner; date:string; note:string; category:string; revision:number; createdAt:string };
-export type LedgerFilter = { type?: Entry['type']|'all'; owner?: Owner|'全部'; category?: string|'全部' };
+export type Entry = { id:string; type:'income'|'expense'; amount:number; owner:Owner; ownerKey:OwnerKey; date:string; note:string; category:string; revision:number; createdAt:string };
+export type LedgerFilter = { type?: Entry['type']|'all'; owner?: Owner|'全部'; ownerKey?: OwnerKey|'全部'; category?: string|'全部' };
 export type DailyTotal = { date:string; income:number; expense:number; surplus:number; count:number };
 export const owners:Owner[] = ['青','华','共同'];
 export const expenseCategories = ['餐饮','交通','购物','居住','日用','娱乐','医疗','人情','旅行','其他'] as const;
@@ -20,16 +20,16 @@ export function toCents(value:string, allowZero=false) {
  if(amount>(MAX_CENTS) || amount<(allowZero?0:1)) throw new Error(allowZero?'期初存款不能为负数':'金额必须大于 0');
  return amount;
 }
-export function validateEntry(value:unknown,today=chinaToday(),options:{categories?:readonly string[];owners?:readonly string[]}={}) {
+export function validateEntry(value:unknown,today=chinaToday(),options:{categories?:readonly string[];ownerKeys?:readonly OwnerKey[]}={}) {
  const b=value as Record<string,unknown>;
- const allowedOwners=options.owners??owners;
- if(!b || !['income','expense'].includes(String(b.type)) || !allowedOwners.includes(b.owner as string)) throw new Error('请选择收支类型和归属');
+ const allowedOwners=options.ownerKeys??ownerKeys;
+ if(!b || !['income','expense'].includes(String(b.type)) || !allowedOwners.includes(b.ownerKey as OwnerKey)) throw new Error('请选择收支类型和归属');
  if(typeof b.amount!=='number'||!Number.isSafeInteger(b.amount)||b.amount<1||b.amount>MAX_CENTS) throw new Error('金额无效');
  if(typeof b.date!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(b.date)||b.date<'1900-01-01'||b.date>today) throw new Error('请选择今天或过去的日期');
  const parsed=new Date(b.date+'T00:00:00Z'); if(!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==b.date)throw new Error('日期无效');
  if(typeof b.note!=='string'||b.note.length>100)throw new Error('备注不能超过 100 字');
  if(typeof b.category!=='string'||!(options.categories??categoriesFor(b.type as Entry['type'])).includes(b.category))throw new Error('请选择分类');
- return {type:b.type as Entry['type'],owner:b.owner as Owner,amount:b.amount,date:b.date,note:b.note.trim(),category:b.category};
+ return {type:b.type as Entry['type'],ownerKey:b.ownerKey as OwnerKey,amount:b.amount,date:b.date,note:b.note.trim(),category:b.category};
 }
 export function totals(entries:Entry[],month:string,opening=0,ownerNames:readonly string[]=owners) {
  const monthly=entries.filter(e=>e.date.startsWith(month));
@@ -39,7 +39,7 @@ export function totals(entries:Entry[],month:string,opening=0,ownerNames:readonl
 }
 export function dailyTotals(entries:Entry[],month:string,filter:LedgerFilter={}) {
  const grouped=new Map<string,DailyTotal>();
- entries.filter(e=>e.date.startsWith(month)&&(filter.type===undefined||filter.type==='all'||e.type===filter.type)&&(filter.owner===undefined||filter.owner==='全部'||e.owner===filter.owner)&&(filter.category===undefined||filter.category==='全部'||e.category===filter.category)).forEach(e=>{
+ entries.filter(e=>e.date.startsWith(month)&&(filter.type===undefined||filter.type==='all'||e.type===filter.type)&&(filter.owner===undefined||filter.owner==='全部'||e.owner===filter.owner)&&(filter.ownerKey===undefined||filter.ownerKey==='全部'||e.ownerKey===filter.ownerKey)&&(filter.category===undefined||filter.category==='全部'||e.category===filter.category)).forEach(e=>{
   const current=grouped.get(e.date)??{date:e.date,income:0,expense:0,surplus:0,count:0};
   current[e.type]+=e.amount;
   current.surplus=current.income-current.expense;

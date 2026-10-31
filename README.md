@@ -31,10 +31,11 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0001_loving_vertigo.sql
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0002_sudden_pretty_boy.sql
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0003_yummy_corsair.sql
+node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0004_owner_keys.sql
 pnpm run dev
 ```
 
-本地迁移仅首次运行或增加迁移时执行（0000 建表，0001 增加分类字段，0002 增加头像表，0003 增加动态分类和归属名字表）；线上 D1 需要执行对应迁移时，去掉 `--local` 并加上 `--remote`。开发地址以命令输出为准。部署到其他平台需要提供兼容的 Cloudflare Workers 运行环境和 D1 绑定，不能仅部署为静态网页。
+本地迁移仅首次运行或增加迁移时执行（0000 建表，0001 增加分类字段，0002 增加头像表，0003 增加动态分类和归属名字表，0004 将账目和头像的归属迁移为稳定的 owner key）；线上 D1 需要执行对应迁移时，去掉 `--local` 并加上 `--remote`。开发地址以命令输出为准。部署到其他平台需要提供兼容的 Cloudflare Workers 运行环境和 D1 绑定，不能仅部署为静态网页。
 
 ## 检查
 

@@ -14,6 +14,16 @@ const DEFAULT_OWNERS:{key:OwnerKey;name:string}[]=[
  {key:'together',name:'共同'},
 ];
 
+// 兼容迁移前仍是显示名的存量数据；迁移完成后 owner 列里已经是 key。
+function resolveOwnerKey(value:string, ownerList:{key:OwnerKey;name:string}[]):OwnerKey{
+ if((ownerKeys as readonly string[]).includes(value))return value as OwnerKey;
+ const byName=ownerList.find((owner)=>owner.name===value);
+ if(byName)return byName.key;
+ if(value==='男生'||value==='青')return 'qing';
+ if(value==='女生'||value==='伊'||value==='华')return 'hua';
+ return 'together';
+}
+
 function db(){if(!env.DB)throw new Error('账本暂时无法连接，请稍后重试');return env.DB;}
 function reply(data:unknown,status=200){return Response.json(data,{status,headers:{'Cache-Control':'no-store'}});}
 
@@ -70,13 +80,14 @@ async function read(){
  const avatars:Record<string,string>={};
  try{
   const avatarRows=await database.prepare('SELECT owner, data FROM avatars').all();
-  (avatarRows.results as AvatarRow[]).forEach((a)=>{if(a.owner&&a.data)avatars[a.owner]=a.data;});
+  (avatarRows.results as AvatarRow[]).forEach((a)=>{if(a.owner&&a.data)avatars[resolveOwnerKey(a.owner,ownerList)]=a.data;});
  }catch{}
- const qingName=ownerList.find((owner)=>owner.key==='qing')?.name??'青';
- const huaName=ownerList.find((owner)=>owner.key==='hua')?.name??'华';
- const aliases:Record<string,string>={'男生':qingName,'女生':huaName,'伊':huaName};
+ const ownerNameByKey=new Map(ownerList.map((owner)=>[owner.key,owner.name]));
  return {
-  entries:(rows.results as EntryRow[]).map((r)=>({...r,owner:aliases[r.owner]??r.owner,category:r.category||'其他',createdAt:r.created_at})),
+  entries:(rows.results as EntryRow[]).map((r)=>{
+   const ownerKey=resolveOwnerKey(r.owner,ownerList);
+   return {...r,owner:ownerNameByKey.get(ownerKey)??r.owner,ownerKey,category:r.category||'其他',createdAt:r.created_at};
+  }),
   today:chinaToday(),
   avatars,
   categories,
@@ -99,14 +110,14 @@ export async function POST(request:Request){
   if(b.action==='save'){
    const [categories,ownerList]=await Promise.all([readCategories(database),readOwners(database)]);
    const type=b.entry?.type==='income'?'income':'expense';
-   const v=validateEntry(b.entry,chinaToday(),{categories:categories[type],owners:ownerList.map((owner)=>owner.name)});
+   const v=validateEntry(b.entry,chinaToday(),{categories:categories[type],ownerKeys:ownerList.map((owner)=>owner.key)});
    const id=b.entry.id;const revision=b.entry.revision;
    if(id){
     if(typeof id!=='string'||!Number.isInteger(revision))return reply({error:'记录无效'},400);
-    const r=await database.prepare('UPDATE entries SET type=?,amount=?,owner=?,date=?,note=?,category=?,revision=revision+1 WHERE id=? AND revision=?').bind(v.type,v.amount,v.owner,v.date,v.note,v.category,id,revision).run();
+    const r=await database.prepare('UPDATE entries SET type=?,amount=?,owner=?,date=?,note=?,category=?,revision=revision+1 WHERE id=? AND revision=?').bind(v.type,v.amount,v.ownerKey,v.date,v.note,v.category,id,revision).run();
     if(!r.meta.changes)return reply({error:'记录已被更新或删除，请刷新后重试'},409);
    }else{
-    await database.prepare('INSERT INTO entries (id,type,amount,owner,date,note,category,revision,created_at) VALUES (?,?,?,?,?,?,?,1,?)').bind(crypto.randomUUID(),v.type,v.amount,v.owner,v.date,v.note,v.category,new Date().toISOString()).run();
+    await database.prepare('INSERT INTO entries (id,type,amount,owner,date,note,category,revision,created_at) VALUES (?,?,?,?,?,?,?,1,?)').bind(crypto.randomUUID(),v.type,v.amount,v.ownerKey,v.date,v.note,v.category,new Date().toISOString()).run();
    }
   }else if(b.action==='delete'){
    if(typeof b.id!=='string'||!Number.isInteger(b.revision))return reply({error:'记录无效'},400);
@@ -114,12 +125,17 @@ export async function POST(request:Request){
    if(!r.meta.changes)return reply({error:'记录已被更新或删除，请刷新后重试'},409);
   }else if(b.action==='avatar'){
    const ownerList=await readOwners(database);
-   if(!ownerList.some((owner)=>owner.name===b.owner)||typeof b.data!=='string')return reply({error:'头像无效'},400);
+   const matched=typeof b.ownerKey==='string'
+    ? ownerList.find((owner)=>owner.key===b.ownerKey)
+    : typeof b.owner==='string'
+     ? ownerList.find((owner)=>owner.name===b.owner)
+     : undefined;
+   if(!matched||typeof b.data!=='string')return reply({error:'头像无效'},400);
    if(b.data===''){
-    await database.prepare('DELETE FROM avatars WHERE owner=?').bind(b.owner).run();
+    await database.prepare('DELETE FROM avatars WHERE owner=?').bind(matched.key).run();
    }else{
     if(!b.data.startsWith('data:image/')||b.data.length>300000)return reply({error:'头像过大或格式不支持'},400);
-    await database.prepare('INSERT INTO avatars (owner,data,updated_at) VALUES (?,?,?) ON CONFLICT(owner) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at').bind(b.owner,b.data,new Date().toISOString()).run();
+    await database.prepare('INSERT INTO avatars (owner,data,updated_at) VALUES (?,?,?) ON CONFLICT(owner) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at').bind(matched.key,b.data,new Date().toISOString()).run();
    }
   }else if(b.action==='category'){
    const type=b.type==='income'?'income':b.type==='expense'?'expense':null;
@@ -163,9 +179,10 @@ export async function POST(request:Request){
    if(ownerList.some((owner)=>owner.key!==b.key&&owner.name===name))return reply({error:'该名字已被使用'},409);
    if(name!==current.name){
     await database.batch([
-     database.prepare('UPDATE entries SET owner=?, revision=revision+1 WHERE owner=?').bind(name,current.name),
-     database.prepare('UPDATE avatars SET owner=? WHERE owner=?').bind(name,current.name),
      database.prepare('UPDATE owners SET name=? WHERE key=?').bind(name,b.key),
+     // 兼容尚未迁移的数据：如果仍存着旧显示名，顺手改成稳定的 key；已迁移的记录不会匹配。
+     database.prepare('UPDATE entries SET owner=? WHERE owner=?').bind(b.key,current.name),
+     database.prepare('UPDATE OR REPLACE avatars SET owner=? WHERE owner=?').bind(b.key,current.name),
     ]);
    }
   }else return reply({error:'不支持的操作'},400);
