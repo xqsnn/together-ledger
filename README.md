@@ -11,7 +11,7 @@
 - 今天：快捷记收入或支出，查看今日收入、支出和当天明细。
 - 账目：月历和按日分组明细，支持月份、归属、收支、分类组合筛选；点击日期看当天汇总，手机用收/支标记，完整金额在当天摘要中显示。
 - 分析：“月度收支”按月份和归属看收入、支出、当月盈余、最高支出日及按天趋势，可展开每日数据并跳转到当天账目；底部按分类展示当月收入、支出占比。
-- 设置：记账归属及共享账本入口。
+- 设置：可为青、华、共同分别上传圆形头像（带归属色描边），头像同步用于记账表单和分析页；共享账本入口。
 - 按月份、归属、收支、分类组合筛选，编辑、删除和同步重算。
 - 云端 D1 持久化，每 20 秒及重新聚焦页面时刷新。
 - 编辑 / 删除具有版本冲突检查。
@@ -29,10 +29,11 @@ pnpm install
 pnpm run build
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_flippant_grey_gargoyle.sql
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0001_loving_vertigo.sql
+node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0002_sudden_pretty_boy.sql
 pnpm run dev
 ```
 
-本地迁移仅首次运行或增加迁移时执行（0000 建表，0001 增加分类字段）；线上 D1 需要执行对应迁移时，去掉 `--local` 并加上 `--remote`。开发地址以命令输出为准。部署到其他平台需要提供兼容的 Cloudflare Workers 运行环境和 D1 绑定，不能仅部署为静态网页。
+本地迁移仅首次运行或增加迁移时执行（0000 建表，0001 增加分类字段，0002 增加头像表）；线上 D1 需要执行对应迁移时，去掉 `--local` 并加上 `--remote`。开发地址以命令输出为准。部署到其他平台需要提供兼容的 Cloudflare Workers 运行环境和 D1 绑定，不能仅部署为静态网页。
 
 ## 检查
 

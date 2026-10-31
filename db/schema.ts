@@ -4,6 +4,9 @@ export const entries = sqliteTable('entries', {
  owner: text('owner').notNull(), date: text('date').notNull(), note: text('note').notNull().default(''), category: text('category').notNull().default('其他'),
  revision: integer('revision').notNull().default(1), createdAt: text('created_at').notNull(),
 });
+export const avatars = sqliteTable('avatars', {
+ owner: text('owner').primaryKey(), data: text('data').notNull(), updatedAt: text('updated_at').notNull(),
+});
 export const settings = sqliteTable('settings', {
  id: text('id').primaryKey(), opening: integer('opening').notNull().default(0), revision: integer('revision').notNull().default(1),
 });
