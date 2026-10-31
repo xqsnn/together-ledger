@@ -1,14 +1,15 @@
 # 两人账本
 
-两个人共用一本日常账本，每天记录收入、支出与青 / 伊 / 共同三类归属。米白与鼠尾草绿界面，支持电脑和手机。
+两个人共用一本日常账本，每天记录收入、支出与青 / 华 / 共同三类归属。米白与鼠尾草绿界面，支持电脑和手机。
 
 ## 已实现
 
 - 收入、支出录入，人民币金额最多两位小数，归属每次手动选择。
+- 支出分类：餐饮、交通、购物、居住、日用、娱乐、医疗、人情、旅行、其他；收入分类：工资、生活费、理财、意外所得、其他。
 - 日期默认北京时间的今天，可补记历史记录，不接受未来日期。
 - 今天：电脑和手机均在日期旁低强调显示存款；快捷记收入或支出，查看今日收入、支出、结余和当天明细。
-- 账目：月历和按日分组明细，支持月份、归属、收支组合筛选；点击日期看当天汇总并补记，手机用收/支标记，完整金额在当天摘要中显示。
-- 分析：月份筛选上方独立展示存款；下方“月度收支”按月份和归属看收入、支出、当月盈余、最高支出日及按天趋势，可展开每日数据并跳转到当天账目。期初存款仅在设置中管理。
+- 账目：月历和按日分组明细，支持月份、归属、收支、分类组合筛选；点击日期看当天汇总，手机用收/支标记，完整金额在当天摘要中显示。
+- 分析：月份筛选上方独立展示存款；下方“月度收支”按月份和归属看收入、支出、当月盈余、最高支出日及按天趋势，可展开每日数据并跳转到当天账目；底部按分类展示当月收入、支出占比。期初存款仅在设置中管理。
 - 设置：期初存款、记账归属说明及共享账本入口。
 - 按月份、归属、收支类型组合筛选，编辑、删除和同步重算。
 - 云端 D1 持久化，每 20 秒及重新聚焦页面时刷新。
@@ -26,10 +27,11 @@ React 19、TypeScript、Vinext、Vite、Cloudflare Workers / D1、Drizzle、Luci
 pnpm install
 pnpm run build
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_flippant_grey_gargoyle.sql
+node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0001_loving_vertigo.sql
 pnpm run dev
 ```
 
-本地迁移仅首次运行或增加迁移时执行。开发地址以命令输出为准。部署到其他平台需要提供兼容的 Cloudflare Workers 运行环境和 D1 绑定，不能仅部署为静态网页。
+本地迁移仅首次运行或增加迁移时执行（0000 建表，0001 增加分类字段）；线上 D1 需要执行对应迁移时，去掉 `--local` 并加上 `--remote`。开发地址以命令输出为准。部署到其他平台需要提供兼容的 Cloudflare Workers 运行环境和 D1 绑定，不能仅部署为静态网页。
 
 ## 检查
 
