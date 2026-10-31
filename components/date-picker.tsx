@@ -137,7 +137,7 @@ export function DatePicker({ value, max, onChange }: DatePickerProps) {
 
       {open && position && (
         <div
-          className="date-popover"
+          className={`date-popover ${position.placement}`}
           role="dialog"
           aria-label="选择日期"
           style={{
