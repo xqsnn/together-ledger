@@ -41,6 +41,7 @@ import {
   toCents,
   totals,
 } from '@/lib/ledger';
+import { MonthPicker } from '@/components/month-picker';
 
 type Ledger = {
   entries: Entry[];
@@ -474,7 +475,7 @@ export default function Home() {
       <div className="month-toolbar">
         <div className="month-picker">
           <button aria-label="上个月" disabled={month <= '1900-01'} onClick={() => changeMonth(-1)}><ChevronLeft size={19} /></button>
-          <label className="month-label">{monthLabel}<ChevronDown size={14} /><input aria-label="选择月份" type="month" value={month} max={currentMonth} min="1900-01" onChange={(event) => setDisplayedMonth(event.target.value)} /></label>
+          <MonthPicker value={month} max={currentMonth} onChange={setDisplayedMonth} />
           <button aria-label="下个月" disabled={month >= currentMonth} onClick={() => changeMonth(1)}><ChevronRight size={19} /></button>
           {!isCurrent && <button className="back-month" onClick={() => setDisplayedMonth(currentMonth)}>回到本月</button>}
         </div>
@@ -499,13 +500,13 @@ export default function Home() {
               return (
                 <button key={dateValue} aria-label={dayLabel} title={dayLabel} aria-pressed={selected} aria-current={today ? 'date' : undefined} disabled={future} className={`calendar-day ${selected ? 'selected' : ''} ${today ? 'today' : ''} ${future ? 'calendar-future' : ''}`} onClick={() => selectDay(dateValue)}>
                   <span className="calendar-day-number">{Number(dateValue.slice(8))}</span>
-                  {total ? <><span className="calendar-day-values" aria-hidden="true">{total.income > 0 && <em className="income">+{money(total.income)}</em>}{total.expense > 0 && <em className="expense">−{money(total.expense)}</em>}</span><span className="calendar-day-markers" aria-hidden="true">{total.income > 0 && <b className="income">收</b>}{total.expense > 0 && <b className="expense">支</b>}</span></> : <span className="calendar-no-record" aria-hidden="true">{future ? '' : '—'}</span>}
+                  <span className="calendar-day-dots" aria-hidden="true">{total?.income ? <i className="income" /> : null}{total?.expense ? <i className="expense" /> : null}</span>
                 </button>
               );
             })}
           </div>
-          <p className="calendar-legend"><span className="income">+ / 收：收入</span><span className="expense">− / 支：支出</span><span>—：{hasRecordFilters ? '无匹配记录' : '尚无记录'}</span></p>
-          <p className="daily-note">点选日期查看完整金额；尚无记录不代表当天没有收支。</p>
+          <p className="calendar-legend"><span><i className="legend-income" />有收入</span><span><i className="legend-expense" />有支出</span><span>点选日期，在右侧查看完整金额</span></p>
+          <p className="daily-note">圆点仅标记当天有记录；尚无记录不代表当天没有收支。</p>
         </section>
         <section className="selected-day-panel panel" aria-labelledby="selected-day-title">
           <div className="selected-day-heading"><div><h2 id="selected-day-title">{dateLabel(selectedDay)} · 星期{dayOfWeek(selectedDay)}</h2><p className="section-subtitle">{owner === '全部' ? '全部归属' : owner} · {typeLabel} · {selectedEntries.length} 笔</p></div><button className="primary small-primary" onClick={() => openEntry(undefined, selectedDay, type === 'income' ? 'income' : 'expense')}><Plus size={17} />记一笔</button></div>
