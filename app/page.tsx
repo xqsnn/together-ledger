@@ -635,22 +635,28 @@ export default function Home() {
         </div>
       );
     }
-    return entries.map((entry, index) => (
-      <button className="entry-row" key={entry.id} style={{ animationDelay: `${Math.min(index, 8) * 24}ms` }} onClick={() => openEntry(entry)}>
-        <span className={`entry-icon ${entry.type === 'income' ? 'income-bg' : 'expense-bg'}`} aria-hidden="true">
-          {entry.type === 'income' ? <ArrowDownLeft size={19} /> : entry.owner === '共同' ? <Heart size={18} /> : <ArrowUpRight size={19} />}
-        </span>
-        <span className="entry-desc">
-          <strong>{entry.note || (entry.type === 'income' ? '一笔收入' : '一笔支出')}</strong>
-          <span>{entry.date === data.today ? '今天' : `${dateLabel(entry.date)} · 星期${dayOfWeek(entry.date)}`}<i />{entry.type === 'income' ? '收入' : '支出'}<i />{entry.category}</span>
-        </span>
-        <span className={`tag ${classForOwner(entry.owner)}`}>{entry.owner}</span>
-        <strong className={`entry-amount ${entry.type === 'income' ? 'income' : 'expense'}`}>
-          {entry.type === 'income' ? '+' : '−'} {money(entry.amount)}
-        </strong>
-        <ChevronRight className="entry-arrow" size={14} aria-hidden="true" />
-      </button>
-    ));
+    return entries.map((entry, index) => {
+      const photo = photoForOwner(entry.owner);
+      return (
+        <button className="entry-row" key={entry.id} style={{ animationDelay: `${Math.min(index, 8) * 24}ms` }} onClick={() => openEntry(entry)}>
+          <span className={`entry-icon ${entry.type === 'income' ? 'income-bg' : 'expense-bg'}`} aria-hidden="true">
+            {entry.type === 'income' ? <ArrowDownLeft size={19} /> : entry.owner === '共同' ? <Heart size={18} /> : <ArrowUpRight size={19} />}
+          </span>
+          <span className="entry-desc">
+            <strong>{entry.note || (entry.type === 'income' ? '一笔收入' : '一笔支出')}</strong>
+            <span>{entry.date === data.today ? '今天' : `${dateLabel(entry.date)} · 星期${dayOfWeek(entry.date)}`}<i />{entry.type === 'income' ? '收入' : '支出'}<i />{entry.category}</span>
+          </span>
+          <span className={`tag ${classForOwner(entry.owner)}`}>
+            <i className="tag-avatar" style={photo ? { backgroundImage: `url(${photo})` } : undefined} aria-hidden="true">{photo ? null : classForOwner(entry.owner) === 'together' ? <Users size={12} /> : <UserRound size={12} />}</i>
+            {entry.owner}
+          </span>
+          <strong className={`entry-amount ${entry.type === 'income' ? 'income' : 'expense'}`}>
+            {entry.type === 'income' ? '+' : '−'} {money(entry.amount)}
+          </strong>
+          <ChevronRight className="entry-arrow" size={14} aria-hidden="true" />
+        </button>
+      );
+    });
   }
 
   function renderToday() {

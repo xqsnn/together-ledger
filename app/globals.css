@@ -232,10 +232,14 @@ svg { flex-shrink: 0; }
 .entry-desc > strong { display: block; color: #42553c; font-size: 15px; font-weight: 500; overflow-wrap: anywhere; }
 .entry-desc > span { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 5px; color: var(--muted); font-size: 12px; }
 .entry-desc i { width: 2px; height: 2px; border-radius: 50%; background: #6f805f; }
-.tag { display: inline-block; justify-self: start; padding: 4px 8px; border-radius: 5px; font-size: 12px; white-space: nowrap; }
+.tag { display: inline-flex; align-items: center; gap: 5px; justify-self: start; padding: 2px 9px 2px 2px; border-radius: 999px; font-size: 12px; white-space: nowrap; }
 .tag.qing { color: #2f6f6a; background: #e3f2ef; }
 .tag.hua { color: #8d604a; background: #f8ede4; }
 .tag.together { color: #a8516f; background: #f9e9ef; }
+.tag-avatar { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; background-position: center; background-size: cover; }
+.tag.qing .tag-avatar { border: 1.5px solid #68a7a1; background-color: #d3e9e4; }
+.tag.hua .tag-avatar { border: 1.5px solid #c39b7d; background-color: #f1e0d0; }
+.tag.together .tag-avatar { border: 1.5px solid #d19cb4; background-color: #f6dde6; }
 .entry-amount { min-width: 92px; text-align: right; font-family: Arial, sans-serif; font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .entry-arrow { display: none; }
 .record-day-group + .record-day-group { border-top: 1px solid var(--line); }
