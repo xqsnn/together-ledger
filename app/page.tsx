@@ -132,14 +132,24 @@ export default function Home() {
   const [busy, setBusy] = useState(false);
   const [avatarBusy, setAvatarBusy] = useState<Owner | null>(null);
   const [toast, setToast] = useState('');
+  const [toastLeaving, setToastLeaving] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const deleteRef = useRef<HTMLDialogElement>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toastOutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const notify = (text: string) => {
     setToast(text);
+    setToastLeaving(false);
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(''), 3500);
+    if (toastOutTimer.current) clearTimeout(toastOutTimer.current);
+    toastTimer.current = setTimeout(() => {
+      setToastLeaving(true);
+      toastOutTimer.current = setTimeout(() => {
+        setToast('');
+        setToastLeaving(false);
+      }, 220);
+    }, 3200);
   };
 
   const refresh = useCallback((signal?: AbortSignal) => {
@@ -171,7 +181,10 @@ export default function Home() {
     };
   }, [refresh]);
 
-  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
+  useEffect(() => () => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    if (toastOutTimer.current) clearTimeout(toastOutTimer.current);
+  }, []);
 
   useEffect(() => {
     if (modal) dialogRef.current?.showModal();
@@ -186,11 +199,14 @@ export default function Home() {
   useEffect(() => {
     if (!dayCard) return;
     const hide = () => setDayCard(null);
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setDayCard(null); };
     window.addEventListener('scroll', hide, true);
     window.addEventListener('resize', hide);
+    window.addEventListener('keydown', onKeyDown);
     return () => {
       window.removeEventListener('scroll', hide, true);
       window.removeEventListener('resize', hide);
+      window.removeEventListener('keydown', onKeyDown);
     };
   }, [dayCard]);
 
@@ -341,6 +357,7 @@ export default function Home() {
 
   function setDisplayedMonth(value: string) {
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(value) || value < '1900-01' || value > currentMonth) return;
+    setDayCard(null);
     if (view === 'analysis') {
       setAnalysisMonth(value === currentMonth ? null : value);
       setTrendDay(null);
@@ -565,7 +582,7 @@ export default function Home() {
       selectDay(date);
       setOwner('全部');
       setType('all');
-      if (date !== data.today || view !== 'today') { setView('records'); setRecordMode('calendar'); }
+      if (date !== data.today || view !== 'today') { goTo('records'); setRecordMode('calendar'); }
       notify(editing ? '记录已更新' : '记下了，又是生活的一笔');
       setModal(null);
     } catch (caught) {
@@ -599,6 +616,8 @@ export default function Home() {
   }
 
   function goTo(viewName: View) {
+    if (viewName !== view) window.scrollTo({ top: 0, behavior: 'smooth' });
+    setDayCard(null);
     setView(viewName);
     if (viewName === 'today') resetFilters();
   }
@@ -616,8 +635,8 @@ export default function Home() {
         </div>
       );
     }
-    return entries.map((entry) => (
-      <button className="entry-row" key={entry.id} onClick={() => openEntry(entry)}>
+    return entries.map((entry, index) => (
+      <button className="entry-row" key={entry.id} style={{ animationDelay: `${Math.min(index, 8) * 24}ms` }} onClick={() => openEntry(entry)}>
         <span className={`entry-icon ${entry.type === 'income' ? 'income-bg' : 'expense-bg'}`} aria-hidden="true">
           {entry.type === 'income' ? <ArrowDownLeft size={19} /> : entry.owner === '共同' ? <Heart size={18} /> : <ArrowUpRight size={19} />}
         </span>
@@ -655,7 +674,7 @@ export default function Home() {
           <div className="today-summary-card"><span>今日收入</span><strong className="income">¥ {money(todaySummary.income)}</strong><small>{todayEntries.filter((entry) => entry.type === 'income').length} 笔记录</small></div>
         </section>
         <section className="today-records panel">
-          <div className="section-head"><div><h2>今天的记录 <span>{todayEntries.length} 笔</span></h2></div><button className="text-button" onClick={() => { setView('records'); setRecordMode('calendar'); resetFilters(); }}>查看日历 <CalendarDays size={16} /></button></div>
+          <div className="section-head"><div><h2>今天的记录 <span>{todayEntries.length} 笔</span></h2></div><button className="text-button" onClick={() => { goTo('records'); setRecordMode('calendar'); resetFilters(); }}>查看日历 <CalendarDays size={16} /></button></div>
           <div className="entry-list">{entryRows(todayEntries, true)}</div>
         </section>
       </>
@@ -722,7 +741,8 @@ export default function Home() {
           <p className="calendar-legend"><span><i className="legend-income" />有收入</span><span><i className="legend-expense" />有支出</span></p>
         </section>
         {dayCard && (
-          <div className="day-card" aria-hidden="true" style={{ left: dayCard.x, top: dayCard.y, transform: dayCard.placement === 'top' ? 'translateY(-100%)' : undefined }}>
+          <div className="day-card" key={dayCard.date} aria-hidden="true" style={{ left: dayCard.x, top: dayCard.y, transform: dayCard.placement === 'top' ? 'translateY(-100%)' : undefined }}>
+            <div className="day-card-inner">
             <div className="day-card-head">
               <strong>{dateLabel(dayCard.date)}</strong>
               <em>星期{dayOfWeek(dayCard.date)}{dayCard.date === data.today ? ' · 今天' : ''}</em>
@@ -750,6 +770,7 @@ export default function Home() {
             ) : (
               <p className="day-card-empty">{hasRecordFilters ? '没有符合筛选的记录' : '当天暂无记录'}。</p>
             )}
+            </div>
           </div>
         )}
       </>
@@ -758,7 +779,7 @@ export default function Home() {
 
   function renderSelectedDay() {
     return (
-      <section className="selected-day-panel panel" aria-labelledby="selected-day-title">
+      <section className="selected-day-panel panel" key={selectedDay} aria-labelledby="selected-day-title">
         <div className="selected-day-heading"><div><h2 id="selected-day-title">{dateLabel(selectedDay)} · 星期{dayOfWeek(selectedDay)}</h2><p className="section-subtitle">{owner === '全部' ? '全部归属' : owner} · {typeLabel} · {selectedEntries.length} 笔</p></div></div>
         <div className="day-navigation"><button className="text-button" disabled={selectedDay <= '1900-01-01'} onClick={() => shiftDay(-1)}><ChevronLeft size={16} />前一天</button>{selectedDay !== data.today && <button className="text-button" onClick={() => selectDay(data.today)}>回到今天</button>}<button className="text-button" disabled={selectedDay >= data.today} onClick={() => shiftDay(1)}>后一天<ChevronRight size={16} /></button></div>
         <div className="day-summary" aria-label="当前筛选汇总">
@@ -795,7 +816,7 @@ export default function Home() {
       <>
         {renderMonthToolbar()}
         {renderFilters()}
-        <div className="record-view-tabs" role="group" aria-label="账目视图"><button aria-pressed={recordMode === 'calendar'} className={recordMode === 'calendar' ? 'selected' : ''} onClick={() => setRecordMode('calendar')}><CalendarDays size={17} />日历</button><button aria-pressed={recordMode === 'list'} className={recordMode === 'list' ? 'selected' : ''} onClick={() => setRecordMode('list')}><List size={17} />明细</button></div>
+        <div className="record-view-tabs" role="group" aria-label="账目视图"><button aria-pressed={recordMode === 'calendar'} className={recordMode === 'calendar' ? 'selected' : ''} onClick={() => { setDayCard(null); setRecordMode('calendar'); }}><CalendarDays size={17} />日历</button><button aria-pressed={recordMode === 'list'} className={recordMode === 'list' ? 'selected' : ''} onClick={() => { setDayCard(null); setRecordMode('list'); }}><List size={17} />明细</button></div>
         {recordMode === 'calendar' ? renderCalendar() : renderList()}
       </>
     );
@@ -817,7 +838,7 @@ export default function Home() {
         <div className="analysis-grid">
           <section className="analysis-trend panel">
             <div className="section-head"><div><h2>每天的收支趋势</h2></div><TrendingUp size={20} aria-hidden="true" /></div>
-            {recordedDays ? <><div className="trend-scroll" tabIndex={0} role="region" aria-label="每日收支柱状图，可横向滚动"><div className="trend-chart">{trendDays.map((item) => <button className="trend-column" key={item.date} aria-pressed={trendSelection.date === item.date} aria-label={`${item.date}，${item.count ? `收入${money(item.income)}元，支出${money(item.expense)}元` : '尚无记录'}`} title={`${dateLabel(item.date)}：收入 ¥${money(item.income)} / 支出 ¥${money(item.expense)}`} onClick={() => setTrendDay(item.date)}><span className="trend-bars" aria-hidden="true"><span className="trend-bar income" style={{ height: `${item.income / maxDailyAmount * 100}%` }} /><span className="trend-bar expense" style={{ height: `${item.expense / maxDailyAmount * 100}%` }} /></span><small>{Number(item.date.slice(8))}</small></button>)}</div></div><div className="trend-readout" aria-live="polite"><strong>{dateLabel(trendSelection.date)}</strong><span>{trendSelection.count ? `收入 ¥${money(trendSelection.income)} · 支出 ¥${money(trendSelection.expense)}` : '尚无记录'}</span><button className="text-button" onClick={() => { selectDay(trendSelection.date); setOwner(analysisOwner); setType('all'); setRecordMode('calendar'); setView('records'); }}>查看当天<ArrowRight size={15} /></button></div></> : <div className="empty"><BarChart3 size={28} /><h3>当月还没有记录</h3><p>记录收入和支出后，即可查看每天的变化。</p></div>}
+            {recordedDays ? <><div className="trend-scroll" tabIndex={0} role="region" aria-label="每日收支柱状图，可横向滚动"><div className="trend-chart">{trendDays.map((item) => <button className="trend-column" key={item.date} aria-pressed={trendSelection.date === item.date} aria-label={`${item.date}，${item.count ? `收入${money(item.income)}元，支出${money(item.expense)}元` : '尚无记录'}`} title={`${dateLabel(item.date)}：收入 ¥${money(item.income)} / 支出 ¥${money(item.expense)}`} onClick={() => setTrendDay(item.date)}><span className="trend-bars" aria-hidden="true"><span className="trend-bar income" style={{ height: `${item.income / maxDailyAmount * 100}%` }} /><span className="trend-bar expense" style={{ height: `${item.expense / maxDailyAmount * 100}%` }} /></span><small>{Number(item.date.slice(8))}</small></button>)}</div></div><div className="trend-readout" aria-live="polite"><strong>{dateLabel(trendSelection.date)}</strong><span>{trendSelection.count ? `收入 ¥${money(trendSelection.income)} · 支出 ¥${money(trendSelection.expense)}` : '尚无记录'}</span><button className="text-button" onClick={() => { selectDay(trendSelection.date); setOwner(analysisOwner); setType('all'); setRecordMode('calendar'); goTo('records'); }}>查看当天<ArrowRight size={15} /></button></div></> : <div className="empty"><BarChart3 size={28} /><h3>当月还没有记录</h3><p>记录收入和支出后，即可查看每天的变化。</p></div>}
             <div className="trend-legend"><span><i className="legend-income" />收入</span><span><i className="legend-expense" />支出</span><span>共 {elapsedDays} 天</span></div>
             {recordedDays > 0 && <details className="analysis-table"><summary>查看每日数据</summary><div className="table-scroll"><table><caption>{monthLabel} · {analysisOwner === '全部' ? '全部归属' : analysisOwner}</caption><thead><tr><th scope="col">日期</th><th scope="col">收入</th><th scope="col">支出</th><th scope="col">结余</th><th scope="col">记录</th></tr></thead><tbody>{trendDays.map((item) => <tr key={item.date}><th scope="row">{dateLabel(item.date)}</th><td>{item.count ? money(item.income) : '—'}</td><td>{item.count ? money(item.expense) : '—'}</td><td>{item.count ? money(item.surplus) : '—'}</td><td>{item.count ? `${item.count} 笔` : '未记录'}</td></tr>)}</tbody></table></div></details>}
           </section>
@@ -910,7 +931,7 @@ export default function Home() {
           return <div className="owner-avatar-item" key={item.key}>
             <label className={`owner-avatar-upload ${ownerClass(item.key)}`} aria-label={`上传${item.name}的头像`} aria-busy={avatarBusy === item.name}>
               {photo ? <span className="owner-avatar-image" style={{ backgroundImage: `url(${photo})` }} /> : <UserRound size={22} />}
-              <span className="owner-avatar-hint">{photo ? '更换' : '上传'}</span>
+              <span className="owner-avatar-hint">{avatarBusy === item.name ? '上传中' : photo ? '更换' : '上传'}</span>
               <input type="file" accept="image/*" className="avatar-input" disabled={avatarBusy === item.name} onChange={(event) => chooseAvatar(event, item.name)} />
             </label>
             {editingOwner === item.key ? <div className="owner-name-editor"><input value={ownerNameDraft} maxLength={8} autoFocus onChange={(event) => setOwnerNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void saveOwnerName(item.key); } else if (event.key === 'Escape') setEditingOwner(null); }} /><button type="button" aria-label="保存名字" disabled={ownerBusy === item.key} onClick={() => void saveOwnerName(item.key)}><Check size={13} /></button><button type="button" aria-label="取消" onClick={() => setEditingOwner(null)}><X size={13} /></button></div> : <button type="button" className="owner-name-button" aria-label={`编辑${item.name}的名字`} onClick={() => startEditOwner(item)}><span className="owner-avatar-name">{item.name}</span></button>}
@@ -937,14 +958,18 @@ export default function Home() {
       <main className="main"><header className="topbar"><div className="breadcrumb"><strong>{viewLabel[view]}</strong></div><div className="topbar-meta"><span className="topbar-date">{dateLabel(data.today)}<em> · 星期{dayOfWeek(data.today)}</em></span><span className="topbar-savings" aria-label={`当前共同存款 ${money(balance)} 元`}><b className={balance >= 0 ? 'income' : 'expense'}>¥ {money(balance)}</b></span></div></header>
         <div className="content">{error && <div className="error-banner" role="alert">{hasLoaded ? `${error}，当前显示上次同步的账目。` : error}<button onClick={() => { setLoading(true); void refresh(); }}><RefreshCw size={14} />重试</button></div>}
           {view !== 'today' && <section className="page-heading"><div><h1>{heading[view]}</h1></div></section>}
-          {!dataReady ? <section className="panel empty" role="status">{loading ? <><LoaderCircle className="spin" size={26} /><h2>正在翻开账本…</h2></> : <><BookHeart size={30} /><h2>账目暂时无法加载</h2><p>请检查网络后重试。</p><button className="outline-button" onClick={() => { setLoading(true); void refresh(); }}>重新加载</button></>}</section> : view === 'today' ? renderToday() : view === 'records' ? renderRecords() : view === 'analysis' ? renderAnalysis() : renderSettings()}
+          {!dataReady ? <section className="panel empty" role="status">{loading ? <><LoaderCircle className="spin" size={26} /><h2>正在翻开账本…</h2></> : <><BookHeart size={30} /><h2>账目暂时无法加载</h2><p>请检查网络后重试。</p><button className="outline-button" onClick={() => { setLoading(true); void refresh(); }}>重新加载</button></>}</section> : (
+            <div className="view-stage" key={view === 'records' ? `records-${recordMode}` : view}>
+              {view === 'today' ? renderToday() : view === 'records' ? renderRecords() : view === 'analysis' ? renderAnalysis() : renderSettings()}
+            </div>
+          )}
           <footer className="footer"><span><Heart size={12} />两个人的日子，一起好好过。</span><span>两人账本<span className="footer-dot">·</span>始于生活，记于日常</span></footer>
         </div>
       </main>
 
       <dialog ref={dialogRef} aria-labelledby="entry-dialog-title" className="modal" onCancel={(event) => { event.preventDefault(); if (!busy) setModal(null); }} onClick={(event) => { if (event.target === event.currentTarget && !busy) setModal(null); }}><div className="modal-inner"><div className="modal-head"><div><h2 id="entry-dialog-title">{modal === 'entry' ? (editing ? '这一笔生活' : '记下这一笔') : modal === 'categories' ? '分类管理' : '两个人，一本账'}</h2></div><button className="icon-button" aria-label="关闭" disabled={busy} onClick={() => setModal(null)}><X size={21} /></button></div>{modal === 'share' ? <div className="share-content"><Duo /><h3>把生活，放在同一本账里</h3><p>通过网站的分享设置邀请另一半。获准访问后，你们看到和编辑的是同一份账目。</p><div className="share-link"><span>{typeof window !== 'undefined' ? window.location.origin : '账本链接'}</span><button className="outline-button" onClick={async () => { try { await navigator.clipboard.writeText(window.location.origin); notify('账本链接已复制'); } catch { notify('复制失败，请从浏览器地址栏复制链接'); } }}><LinkIcon size={15} />复制</button></div><p className="share-tip">网站当前为私有。复制链接不会自动授予访问权限。</p></div> : modal === 'categories' ? renderCategoryManager() : <form onSubmit={save}><>{modal === 'entry' && <div className="type-tabs" role="group" aria-label="记账类型"><button type="button" aria-pressed={entryType === 'expense'} className={entryType === 'expense' ? 'selected' : ''} onClick={() => { setEntryType('expense'); if (!data.categories.expense.includes(entryCategory)) setEntryCategory(data.categories.expense[0] ?? ''); }}><ArrowUpRight size={17} />支出</button><button type="button" aria-pressed={entryType === 'income'} className={entryType === 'income' ? 'selected income-tab' : ''} onClick={() => { setEntryType('income'); if (!data.categories.income.includes(entryCategory)) setEntryCategory(data.categories.income[0] ?? ''); }}><ArrowDownLeft size={17} />收入</button></div>}<label className="amount-field"><span>金额</span><div><b>¥</b><input aria-label="金额" inputMode="decimal" placeholder="0.00" value={amount} onChange={(event) => setAmount(event.target.value)} maxLength={12} required autoComplete="off" /></div></label><><label className="field-label">记在谁的名下 <span>*</span></label><div className="owner-choices">{data.owners.map((item) => { const photo = data.avatars?.[item.name] ?? (item.key === 'hua' ? '/huang.jpg' : ''); return <button key={item.key} type="button" aria-pressed={selectedOwner === item.name} className={`${ownerClass(item.key)}${selectedOwner === item.name ? ' selected' : ''}`} onClick={() => setSelectedOwner(item.name)}>{item.key === 'together' ? <Users size={20} /> : photo ? <span className={`owner-choice-photo ${ownerClass(item.key)}`} style={{ backgroundImage: `url(${photo})` }} aria-hidden="true" /> : <UserRound size={20} />}<span>{item.name}</span></button>; })}</div><label className="field-label">分类 <span>*</span></label><div className="category-choices" role="group" aria-label="记账分类">{data.categories[entryType].map((item) => <button key={item} type="button" aria-pressed={entryCategory === item} className={entryCategory === item ? 'selected' : ''} onClick={() => setEntryCategory(item)}>{item}</button>)}</div><div className="form-field"><span>发生日期</span><DatePicker value={date} max={ledger.today} onChange={setDate} /></div><label className="form-field">备注<span className="optional">选填</span><input maxLength={100} placeholder="这一笔，是生活里的什么？" value={note} onChange={(event) => setNote(event.target.value)} /></label></>{formError && <p className="form-error" role="alert">{formError}</p>}<div className="modal-actions">{editing && <button type="button" className="delete-button" disabled={busy} onClick={() => { setFormError(''); setDeleting(editing); }}><Trash2 size={17} />删除</button>}<button className="primary" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Check size={18} />} {busy ? '保存中…' : editing ? '保存修改' : '保存'}</button></div></></form>}</div></dialog>
       <dialog aria-labelledby="delete-dialog-title" className="modal confirm-modal" ref={deleteRef} onCancel={(event) => { event.preventDefault(); if (!busy) setDeleting(null); }}><div className="modal-inner"><div className="delete-illustration"><Trash2 size={25} /></div><h2 id="delete-dialog-title">删除这笔记录？</h2><p>“{deleting?.note || '这笔记录'}”将从共享账本删除，余额和月度汇总会同步更新。</p>{formError && <p className="form-error" role="alert">{formError}</p>}<div className="confirm-actions"><button className="outline-button" disabled={busy} onClick={() => setDeleting(null)}>再想想</button><button className="danger-button" disabled={busy} onClick={remove}>{busy ? '删除中…' : '确认删除'}</button></div></div></dialog>
-      {toast && <div className="toast" role="status"><Check size={17} />{toast}</div>}
+      {toast && <div className={`toast${toastLeaving ? ' leaving' : ''}`} role="status"><Check size={17} />{toast}</div>}
     </div>
   );
 }
