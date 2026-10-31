@@ -296,6 +296,7 @@ svg { flex-shrink: 0; }
 .owner-analysis-row > span { color: #455d3c; font-size: 15px; }
 .owner-avatar { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 34px; height: 34px; border-radius: 50%; background: #e3f2ef; color: #2f6f6a; }
 .owner-avatar.hua { background: #f2e4d9; color: #936447; }
+.owner-avatar.has-photo { background: #f2e4d9 url('/huang.jpg') center / cover no-repeat; }
 .owner-avatar.together { background: #f9e9ef; color: #a8516f; }
 .owner-analysis-values { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; margin-left: auto; }
 .owner-analysis-values small { color: var(--muted); font-size: 12px; }
@@ -339,6 +340,7 @@ svg { flex-shrink: 0; }
 .owner-choices button.selected.hua { background: #f8ede4; border-color: #c9a68f; color: #8d604a; }
 .owner-choices button.selected.together { background: #f9e9ef; border-color: #d8aabf; color: #a8516f; }
 .owner-choices button > svg:last-child:not(:first-child) { position: absolute; right: 7px; top: 7px; }
+.owner-choice-photo { display: block; width: 20px; height: 20px; border-radius: 50%; background: #f2e4d9 url('/huang.jpg') center / cover no-repeat; }
 .category-choices { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
 .category-choices button { min-height: 34px; padding: 6px 11px; border: 1px solid #dce4d1; border-radius: 999px; background: #fafbf7; color: #5f7651; font-size: 13px; }
 .category-choices button.selected { border-color: #718d55; background: #eaf1df; color: #355b35; font-weight: 600; }
