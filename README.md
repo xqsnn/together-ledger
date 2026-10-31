@@ -5,13 +5,13 @@
 ## 已实现
 
 - 收入、支出录入，人民币金额最多两位小数，归属每次手动选择。
-- 支出分类：餐饮、交通、购物、居住、日用、娱乐、医疗、人情、旅行、其他；收入分类：工资、生活费、理财、意外所得、其他。
+- 分类可在设置中增删改；默认支出为餐饮、交通、购物、居住、日用、娱乐、医疗、人情、旅行、其他，收入为工资、生活费、理财、意外所得、其他。改名会同步已有记录；删除会提示存量记录数，并将这些记录归入「其他」或剩余的第一个分类。
 - 日期默认北京时间的今天，可补记历史记录，不接受未来日期。
 - 顶部统一显示当前日期、星期和存款，所有页面可见。
 - 今天：快捷记收入或支出，查看今日收入、支出和当天明细。
-- 账目：月历和按日分组明细，支持月份、归属、收支、分类组合筛选；点击日期看当天汇总，手机用收/支标记，完整金额在当天摘要中显示。
+- 账目：从首页「查看日历」进入；月历和按日分组明细，支持月份、归属、收支、分类组合筛选；日历页只展示月历，当天汇总和明细在「明细」页展示。
 - 分析：“月度收支”按月份和归属看收入、支出、当月盈余、最高支出日及按天趋势，可展开每日数据并跳转到当天账目；底部按分类展示当月收入、支出占比。
-- 设置：可为青、华、共同分别上传圆形头像（带归属色描边），头像同步用于记账表单和分析页；共享账本入口。
+- 设置：可为青、华、共同上传圆形头像（带归属色描边）并修改名字，头像和名字同步用于记账表单和分析页；可增删改收支分类；共享账本入口。
 - 按月份、归属、收支、分类组合筛选，编辑、删除和同步重算。
 - 云端 D1 持久化，每 20 秒及重新聚焦页面时刷新。
 - 编辑 / 删除具有版本冲突检查。
@@ -30,10 +30,11 @@ pnpm run build
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_flippant_grey_gargoyle.sql
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0001_loving_vertigo.sql
 node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0002_sudden_pretty_boy.sql
+node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0003_yummy_corsair.sql
 pnpm run dev
 ```
 
-本地迁移仅首次运行或增加迁移时执行（0000 建表，0001 增加分类字段，0002 增加头像表）；线上 D1 需要执行对应迁移时，去掉 `--local` 并加上 `--remote`。开发地址以命令输出为准。部署到其他平台需要提供兼容的 Cloudflare Workers 运行环境和 D1 绑定，不能仅部署为静态网页。
+本地迁移仅首次运行或增加迁移时执行（0000 建表，0001 增加分类字段，0002 增加头像表，0003 增加动态分类和归属名字表）；线上 D1 需要执行对应迁移时，去掉 `--local` 并加上 `--remote`。开发地址以命令输出为准。部署到其他平台需要提供兼容的 Cloudflare Workers 运行环境和 D1 绑定，不能仅部署为静态网页。
 
 ## 检查
 

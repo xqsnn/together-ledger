@@ -19,6 +19,7 @@ import {
   Link as LinkIcon,
   List,
   LoaderCircle,
+  Pencil,
   PieChart,
   RefreshCw,
   SlidersHorizontal,
@@ -30,13 +31,14 @@ import {
   X,
 } from 'lucide-react';
 import {
-  categoriesFor,
   dailyTotals,
   DailyTotal,
   Entry,
   expenseCategories,
   incomeCategories,
   Owner,
+  ownerKeys,
+  OwnerKey,
   owners,
   chinaToday,
   toCents,
@@ -45,23 +47,34 @@ import {
 import { MonthPicker } from '@/components/month-picker';
 import { DatePicker } from '@/components/date-picker';
 
+type OwnerInfo = { key: OwnerKey; name: string };
 type Ledger = {
   entries: Entry[];
   today: string;
-  avatars: Partial<Record<Owner, string>>;
+  avatars: Partial<Record<string, string>>;
+  categories: { expense: string[]; income: string[] };
+  owners: OwnerInfo[];
 };
 type View = 'today' | 'records' | 'analysis' | 'settings';
 type EntryFilter = 'all' | Entry['type'];
 
 type MutationBody =
   | { action: 'avatar'; owner: Owner; data: string }
+  | { action: 'category'; op: 'add' | 'rename' | 'delete'; type: Entry['type']; name: string; newName?: string }
+  | { action: 'owner'; key: OwnerKey; name: string }
   | { action: 'delete'; id: string; revision: number }
   | { action: 'save'; entry: Partial<Entry> & { type: Entry['type']; amount: number; owner: Owner; date: string; note: string; category: string } };
 
-const blank: Ledger = { entries: [], today: chinaToday(), avatars: {} };
+const blank: Ledger = {
+  entries: [],
+  today: chinaToday(),
+  avatars: {},
+  categories: { expense: [...expenseCategories], income: [...incomeCategories] },
+  owners: ownerKeys.map((key, index) => ({ key, name: owners[index] })),
+};
 const money = (n: number) =>
   (n / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const ownerClass = (owner: string) => (owner === '青' ? 'qing' : owner === '华' ? 'hua' : 'together');
+const ownerClass = (key: string) => (key === 'qing' ? 'qing' : key === 'hua' ? 'hua' : 'together');
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
 
 function Duo({ small = false }: { small?: boolean }) {
@@ -98,7 +111,16 @@ export default function Home() {
   const [owner, setOwner] = useState<Owner | '全部'>('全部');
   const [type, setType] = useState<EntryFilter>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('全部');
-  const [modal, setModal] = useState<'entry' | 'share' | null>(null);
+  const [modal, setModal] = useState<'entry' | 'share' | 'categories' | null>(null);
+  const [categoryType, setCategoryType] = useState<Entry['type']>('expense');
+  const [categoryDraft, setCategoryDraft] = useState('');
+  const [editingCategory, setEditingCategory] = useState<string | null>(null);
+  const [editingCategoryName, setEditingCategoryName] = useState('');
+  const [deletingCategory, setDeletingCategory] = useState<string | null>(null);
+  const [categoryBusy, setCategoryBusy] = useState(false);
+  const [editingOwner, setEditingOwner] = useState<OwnerKey | null>(null);
+  const [ownerNameDraft, setOwnerNameDraft] = useState('');
+  const [ownerBusy, setOwnerBusy] = useState<OwnerKey | null>(null);
   const [editing, setEditing] = useState<Entry | null>(null);
   const [deleting, setDeleting] = useState<Entry | null>(null);
   const [entryType, setEntryType] = useState<Entry['type']>('expense');
@@ -184,13 +206,17 @@ export default function Home() {
   }, [dayCard?.pinned]);
 
   const data = ledger;
+  const ownerNames = data.owners.map((item) => item.name);
+  const ownerKeyByName = new Map(data.owners.map((item) => [item.name, item.key]));
+  const classForOwner = (name: string) => ownerClass(ownerKeyByName.get(name) ?? 'together');
+  const photoForOwner = (name: string) => data.avatars?.[name] ?? (ownerKeyByName.get(name) === 'hua' ? '/huang.jpg' : '');
   const currentMonth = data.today.slice(0, 7);
   const month = view === 'analysis' ? (analysisMonth ?? currentMonth) : (calendarSelection?.month ?? currentMonth);
   const selectedDay = calendarSelection?.day ?? data.today;
   const dataReady = hasLoaded;
   const monthLabel = `${Number(month.slice(0, 4))} 年 ${Number(month.slice(5))} 月`;
   const isCurrent = month === currentMonth;
-  const monthStats = totals(data.entries.filter((entry) => analysisOwner === '全部' || entry.owner === analysisOwner), month);
+  const monthStats = totals(data.entries.filter((entry) => analysisOwner === '全部' || entry.owner === analysisOwner), month, 0, ownerNames);
   const analysisEntries = data.entries.filter((entry) => entry.date.startsWith(month) && (analysisOwner === '全部' || entry.owner === analysisOwner));
   const categoryBreakdown = (entryType: Entry['type'], categories: readonly string[]) =>
     categories
@@ -200,9 +226,9 @@ export default function Home() {
       }))
       .filter((item) => item.amount > 0)
       .sort((a, b) => b.amount - a.amount);
-  const expenseBreakdown = categoryBreakdown('expense', expenseCategories);
-  const incomeBreakdown = categoryBreakdown('income', incomeCategories);
-  const balance = totals(data.entries, currentMonth).balance;
+  const expenseBreakdown = categoryBreakdown('expense', data.categories.expense);
+  const incomeBreakdown = categoryBreakdown('income', data.categories.income);
+  const balance = totals(data.entries, currentMonth, 0, ownerNames).balance;
   const filteredEntries = data.entries
     .filter(
       (entry) =>
@@ -270,6 +296,7 @@ export default function Home() {
     return day < 1 || day > monthDays ? null : `${month}-${String(day).padStart(2, '0')}`;
   });
   const hasRecordFilters = type !== 'all' || owner !== '全部' || categoryFilter !== '全部';
+  const filterCategories = type === 'all' ? Array.from(new Set([...data.categories.expense, ...data.categories.income])) : data.categories[type];
   const typeLabel = type === 'all' ? '全部收支' : type === 'income' ? '收入' : '支出';
 
   function selectDay(value: string) {
@@ -338,9 +365,10 @@ export default function Home() {
   function openEntry(entry?: Entry, presetDate = data.today, presetType: Entry['type'] = 'expense') {
     if (!dataReady || (!entry && presetDate > data.today)) return;
     const nextType = entry?.type ?? presetType;
+    const nextCategories = data.categories[nextType] ?? [];
     setEditing(entry ?? null);
     setEntryType(nextType);
-    setEntryCategory(entry?.category && categoriesFor(nextType).includes(entry.category) ? entry.category : categoriesFor(nextType)[0]);
+    setEntryCategory(entry?.category && nextCategories.includes(entry.category) ? entry.category : nextCategories[0] ?? '');
     setAmount(entry ? (entry.amount / 100).toFixed(2) : '');
     setSelectedOwner(entry?.owner ?? null);
     setDate(entry?.date ?? presetDate);
@@ -412,6 +440,107 @@ export default function Home() {
       notify(caught instanceof Error ? caught.message : '头像上传失败');
     } finally {
       setAvatarBusy(null);
+    }
+  }
+
+  function syncCategorySelections(result: Ledger, renamed?: { type: Entry['type']; from: string; to: string }) {
+    if (renamed && renamed.type === entryType && entryCategory === renamed.from) {
+      setEntryCategory(renamed.to);
+    } else if (!result.categories[entryType].includes(entryCategory)) {
+      setEntryCategory(result.categories[entryType][0] ?? '');
+    }
+    const nextFilter = type === 'all' ? Array.from(new Set([...result.categories.expense, ...result.categories.income])) : result.categories[type];
+    if (categoryFilter !== '全部' && !nextFilter.includes(categoryFilter)) setCategoryFilter('全部');
+  }
+
+  function syncOwnerSelections(previous: string, next: string) {
+    if (owner === previous) setOwner(next);
+    if (analysisOwner === previous) setAnalysisOwner(next);
+    if (selectedOwner === previous) setSelectedOwner(next);
+  }
+
+  function openCategories() {
+    setCategoryType('expense');
+    setCategoryDraft('');
+    setEditingCategory(null);
+    setDeletingCategory(null);
+    setModal('categories');
+  }
+
+  function startEditOwner(item: OwnerInfo) {
+    setEditingOwner(item.key);
+    setOwnerNameDraft(item.name);
+  }
+
+  async function saveOwnerName(key: OwnerKey) {
+    const name = ownerNameDraft.trim();
+    if (!name) {
+      notify('名字不能为空');
+      return;
+    }
+    const previous = data.owners.find((item) => item.key === key)?.name;
+    setOwnerBusy(key);
+    try {
+      await mutate({ action: 'owner', key, name });
+      setEditingOwner(null);
+      if (previous) syncOwnerSelections(previous, name);
+      notify('名字已更新');
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : '保存失败');
+    } finally {
+      setOwnerBusy(null);
+    }
+  }
+
+  async function addCategory() {
+    const name = categoryDraft.trim();
+    if (!name) {
+      notify('请输入分类名称');
+      return;
+    }
+    setCategoryBusy(true);
+    try {
+      const result = await mutate({ action: 'category', op: 'add', type: categoryType, name });
+      setCategoryDraft('');
+      syncCategorySelections(result);
+      notify('分类已添加');
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : '添加失败');
+    } finally {
+      setCategoryBusy(false);
+    }
+  }
+
+  async function renameCategory(name: string) {
+    const newName = editingCategoryName.trim();
+    if (!newName) {
+      notify('请输入分类名称');
+      return;
+    }
+    setCategoryBusy(true);
+    try {
+      const result = await mutate({ action: 'category', op: 'rename', type: categoryType, name, newName });
+      setEditingCategory(null);
+      syncCategorySelections(result, { type: categoryType, from: name, to: newName });
+      notify('分类已更新');
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : '保存失败');
+    } finally {
+      setCategoryBusy(false);
+    }
+  }
+
+  async function removeCategory(name: string) {
+    setCategoryBusy(true);
+    try {
+      const result = await mutate({ action: 'category', op: 'delete', type: categoryType, name });
+      setDeletingCategory(null);
+      syncCategorySelections(result);
+      notify('分类已删除');
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : '删除失败');
+    } finally {
+      setCategoryBusy(false);
     }
   }
 
@@ -497,7 +626,7 @@ export default function Home() {
           <strong>{entry.note || (entry.type === 'income' ? '一笔收入' : '一笔支出')}</strong>
           <span>{entry.date === data.today ? '今天' : `${dateLabel(entry.date)} · 星期${dayOfWeek(entry.date)}`}<i />{entry.type === 'income' ? '收入' : '支出'}<i />{entry.category}</span>
         </span>
-        <span className={`tag ${ownerClass(entry.owner)}`}>{entry.owner}</span>
+        <span className={`tag ${classForOwner(entry.owner)}`}>{entry.owner}</span>
         <strong className={`entry-amount ${entry.type === 'income' ? 'income' : 'expense'}`}>
           {entry.type === 'income' ? '+' : '−'} {money(entry.amount)}
         </strong>
@@ -541,7 +670,7 @@ export default function Home() {
         <div className="filter-label"><Filter size={16} />{analysis ? '记账归属' : '筛选账目'}</div>
         {!analysis && <div className="type-filter" role="group" aria-label="收支类型">
           {(['all', 'income', 'expense'] as EntryFilter[]).map((item) => (
-            <button key={item} aria-pressed={type === item} className={type === item ? 'selected' : ''} onClick={() => { setType(item); if (categoryFilter !== '全部' && !categoriesFor(item).includes(categoryFilter)) setCategoryFilter('全部'); }}>
+            <button key={item} aria-pressed={type === item} className={type === item ? 'selected' : ''} onClick={() => { setType(item); const next = item === 'all' ? [...new Set([...data.categories.expense, ...data.categories.income])] : data.categories[item]; if (categoryFilter !== '全部' && !next.includes(categoryFilter)) setCategoryFilter('全部'); }}>
               {item === 'all' ? '全部收支' : item === 'income' ? '收入' : '支出'}
             </button>
           ))}
@@ -549,10 +678,10 @@ export default function Home() {
         {!analysis && <label className="category-filter">
           <select aria-label="按分类筛选" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}>
             <option value="全部">全部分类</option>
-            {categoriesFor(type).map((item) => <option key={item} value={item}>{item}</option>)}
+            {filterCategories.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
         </label>}
-        <div className="owner-filter" role="group" aria-label="记账归属">{(['全部', ...owners] as const).map((item) => <button key={item} aria-pressed={activeOwner === item} className={activeOwner === item ? 'selected' : ''} onClick={() => analysis ? setAnalysisOwner(item) : setOwner(item)}>{item === '全部' ? '全部归属' : item}</button>)}</div>
+        <div className="owner-filter" role="group" aria-label="记账归属">{(['全部', ...ownerNames]).map((item) => <button key={item} aria-pressed={activeOwner === item} className={activeOwner === item ? 'selected' : ''} onClick={() => analysis ? setAnalysisOwner(item) : setOwner(item)}>{item === '全部' ? '全部归属' : item}</button>)}</div>
       </div>
     );
   }
@@ -572,7 +701,7 @@ export default function Home() {
 
   function renderCalendar() {
     return (
-      <div className="calendar-layout">
+      <>
         <section className="calendar-panel panel" aria-label={`${monthLabel}收支日历`}>
           <div className="calendar-weekdays" aria-hidden="true">{weekdays.map((weekday) => <span key={weekday}>{weekday}</span>)}</div>
           <div className="calendar-grid">
@@ -624,17 +753,22 @@ export default function Home() {
             )}
           </div>
         )}
-        <section className="selected-day-panel panel" aria-labelledby="selected-day-title">
-          <div className="selected-day-heading"><div><h2 id="selected-day-title">{dateLabel(selectedDay)} · 星期{dayOfWeek(selectedDay)}</h2><p className="section-subtitle">{owner === '全部' ? '全部归属' : owner} · {typeLabel} · {selectedEntries.length} 笔</p></div></div>
-          <div className="day-navigation"><button className="text-button" disabled={selectedDay <= '1900-01-01'} onClick={() => shiftDay(-1)}><ChevronLeft size={16} />前一天</button>{selectedDay !== data.today && <button className="text-button" onClick={() => selectDay(data.today)}>回到今天</button>}<button className="text-button" disabled={selectedDay >= data.today} onClick={() => shiftDay(1)}>后一天<ChevronRight size={16} /></button></div>
-          <div className="day-summary" aria-label="当前筛选汇总">
-            {type !== 'expense' && <div><span>收入</span><strong className="income">¥ {money(selectedSummary.income)}</strong></div>}
-            {type !== 'income' && <div><span>支出</span><strong className="expense">¥ {money(selectedSummary.expense)}</strong></div>}
-            {type === 'all' ? <div><span>结余</span><strong className={selectedSummary.surplus >= 0 ? 'income' : 'expense'}>¥ {money(selectedSummary.surplus)}</strong></div> : <div><span>匹配记录</span><strong>{selectedSummary.count} 笔</strong></div>}
-          </div>
-          <div className="day-entry-list">{entryRows(selectedEntries)}</div>
-        </section>
-      </div>
+      </>
+    );
+  }
+
+  function renderSelectedDay() {
+    return (
+      <section className="selected-day-panel panel" aria-labelledby="selected-day-title">
+        <div className="selected-day-heading"><div><h2 id="selected-day-title">{dateLabel(selectedDay)} · 星期{dayOfWeek(selectedDay)}</h2><p className="section-subtitle">{owner === '全部' ? '全部归属' : owner} · {typeLabel} · {selectedEntries.length} 笔</p></div></div>
+        <div className="day-navigation"><button className="text-button" disabled={selectedDay <= '1900-01-01'} onClick={() => shiftDay(-1)}><ChevronLeft size={16} />前一天</button>{selectedDay !== data.today && <button className="text-button" onClick={() => selectDay(data.today)}>回到今天</button>}<button className="text-button" disabled={selectedDay >= data.today} onClick={() => shiftDay(1)}>后一天<ChevronRight size={16} /></button></div>
+        <div className="day-summary" aria-label="当前筛选汇总">
+          {type !== 'expense' && <div><span>收入</span><strong className="income">¥ {money(selectedSummary.income)}</strong></div>}
+          {type !== 'income' && <div><span>支出</span><strong className="expense">¥ {money(selectedSummary.expense)}</strong></div>}
+          {type === 'all' ? <div><span>结余</span><strong className={selectedSummary.surplus >= 0 ? 'income' : 'expense'}>¥ {money(selectedSummary.surplus)}</strong></div> : <div><span>匹配记录</span><strong>{selectedSummary.count} 笔</strong></div>}
+        </div>
+        <div className="day-entry-list">{entryRows(selectedEntries)}</div>
+      </section>
     );
   }
 
@@ -642,15 +776,18 @@ export default function Home() {
     const grouped = new Map<string, Entry[]>();
     filteredEntries.forEach((entry) => grouped.set(entry.date, [...(grouped.get(entry.date) ?? []), entry]));
     return (
+      <div className="records-list-layout">
       <section className="records panel records-list-panel">
         <div className="section-head"><div><h2>当月明细 <span>{filteredEntries.length} 笔</span></h2></div></div>
         <div className="grouped-records">
           {grouped.size ? Array.from(grouped.entries()).map(([dateValue, entries]) => {
             const summary = dailyMap.get(dateValue)!;
-            return <div className="record-day-group" key={dateValue}><div className="record-day-label"><button className="text-button" onClick={() => { selectDay(dateValue); setRecordMode('calendar'); }}><strong>{dateLabel(dateValue)}</strong><span>星期{dayOfWeek(dateValue)}</span><ChevronRight size={15} /></button><span>{type !== 'expense' && `收入 ¥${money(summary.income)}`}{type === 'all' && ' · '}{type !== 'income' && `支出 ¥${money(summary.expense)}`}</span></div><div className="entry-list">{entryRows(entries)}</div></div>;
+            return <div className="record-day-group" key={dateValue}><div className="record-day-label"><button className="text-button" onClick={() => selectDay(dateValue)}><strong>{dateLabel(dateValue)}</strong><span>星期{dayOfWeek(dateValue)}</span><ChevronRight size={15} /></button><span>{type !== 'expense' && `收入 ¥${money(summary.income)}`}{type === 'all' && ' · '}{type !== 'income' && `支出 ¥${money(summary.expense)}`}</span></div><div className="entry-list">{entryRows(entries)}</div></div>;
           }) : <div className="empty"><BookHeart size={30} /><h3>当月没有符合条件的记录</h3><p>{hasRecordFilters ? '清除筛选后查看当月全部账目。' : '可以在「今天」页记录新的收支。'}</p><button className="text-button" onClick={() => { if (hasRecordFilters) { setOwner('全部'); setType('all'); setCategoryFilter('全部'); } else setRecordMode('calendar'); }}>{hasRecordFilters ? '清除筛选' : '查看日历'}<ArrowRight size={15} /></button></div>}
         </div>
       </section>
+      {renderSelectedDay()}
+      </div>
     );
   }
 
@@ -685,7 +822,7 @@ export default function Home() {
             <div className="trend-legend"><span><i className="legend-income" />收入</span><span><i className="legend-expense" />支出</span><span>共 {elapsedDays} 天</span></div>
             {recordedDays > 0 && <details className="analysis-table"><summary>查看每日数据</summary><div className="table-scroll"><table><caption>{monthLabel} · {analysisOwner === '全部' ? '全部归属' : analysisOwner}</caption><thead><tr><th scope="col">日期</th><th scope="col">收入</th><th scope="col">支出</th><th scope="col">结余</th><th scope="col">记录</th></tr></thead><tbody>{trendDays.map((item) => <tr key={item.date}><th scope="row">{dateLabel(item.date)}</th><td>{item.count ? money(item.income) : '—'}</td><td>{item.count ? money(item.expense) : '—'}</td><td>{item.count ? money(item.surplus) : '—'}</td><td>{item.count ? `${item.count} 笔` : '未记录'}</td></tr>)}</tbody></table></div></details>}
           </section>
-          <section className="analysis-owner panel"><div className="section-head"><div><h2>按归属看收支</h2></div><Users size={20} aria-hidden="true" /></div><div className="owner-analysis-list">{monthStats.byOwner.filter((item) => analysisOwner === '全部' || item.owner === analysisOwner).map((item) => { const photo = data.avatars?.[item.owner] ?? (item.owner === '华' ? '/huang.jpg' : ''); return <div className="owner-analysis-row" key={item.owner}><div className={`owner-avatar ${ownerClass(item.owner)}${photo ? ' has-photo' : ''}`} style={photo ? { backgroundImage: `url(${photo})` } : undefined}>{photo ? null : item.owner === '共同' ? <Users size={17} /> : <UserRound size={17} />}</div><span>{item.owner}</span><div className="owner-analysis-values"><strong>收入 ¥ {money(item.income)}</strong><strong>支出 ¥ {money(item.expense)}</strong><small>占当月支出 {monthStats.expense ? Math.round(item.expense / monthStats.expense * 100) : 0}%</small></div></div>; })}</div></section>
+          <section className="analysis-owner panel"><div className="section-head"><div><h2>按归属看收支</h2></div><Users size={20} aria-hidden="true" /></div><div className="owner-analysis-list">{monthStats.byOwner.filter((item) => analysisOwner === '全部' || item.owner === analysisOwner).map((item) => { const photo = photoForOwner(item.owner); return <div className="owner-analysis-row" key={item.owner}><div className={`owner-avatar ${classForOwner(item.owner)}${photo ? ' has-photo' : ''}`} style={photo ? { backgroundImage: `url(${photo})` } : undefined}>{photo ? null : ownerKeyByName.get(item.owner) === 'together' ? <Users size={17} /> : <UserRound size={17} />}</div><span>{item.owner}</span><div className="owner-analysis-values"><strong>收入 ¥ {money(item.income)}</strong><strong>支出 ¥ {money(item.expense)}</strong><small>占当月支出 {monthStats.expense ? Math.round(item.expense / monthStats.expense * 100) : 0}%</small></div></div>; })}</div></section>
         </div>
         <section className="analysis-categories panel">
           <div className="section-head"><div><h2>分类占比</h2></div><PieChart size={20} aria-hidden="true" /></div>
@@ -719,10 +856,54 @@ export default function Home() {
     );
   }
 
+  /* eslint-disable react-hooks/refs -- 分类操作只在点击后执行，不会在渲染期间读取 ref */
+  function renderCategoryManager() {
+    const list = data.categories[categoryType];
+    return <div className="category-manager">
+      <div className="type-tabs" role="group" aria-label="分类类型">
+        <button type="button" aria-pressed={categoryType === 'expense'} className={categoryType === 'expense' ? 'selected' : ''} onClick={() => { setCategoryType('expense'); setEditingCategory(null); setDeletingCategory(null); }}>支出分类</button>
+        <button type="button" aria-pressed={categoryType === 'income'} className={categoryType === 'income' ? 'selected income-tab' : ''} onClick={() => { setCategoryType('income'); setEditingCategory(null); setDeletingCategory(null); }}>收入分类</button>
+      </div>
+      <div className="category-manage-list">{list.map((name) => {
+        const count = data.entries.filter((entry) => entry.type === categoryType && entry.category === name).length;
+        if (editingCategory === name) {
+          return <div className="category-manage-row editing" key={name}>
+            <input value={editingCategoryName} maxLength={12} autoFocus onChange={(event) => setEditingCategoryName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void renameCategory(name); } else if (event.key === 'Escape') setEditingCategory(null); }} />
+            <button type="button" className="category-icon-button" aria-label="保存" disabled={categoryBusy} onClick={() => void renameCategory(name)}><Check size={15} /></button>
+            <button type="button" className="category-icon-button" aria-label="取消" onClick={() => setEditingCategory(null)}><X size={15} /></button>
+            {count > 0 && <small className="category-warning">有 {count} 笔记录，改名后同步更新</small>}
+          </div>;
+        }
+        if (deletingCategory === name) {
+          const remaining = list.filter((item) => item !== name);
+          const fallback = remaining.includes('其他') ? '其他' : remaining[0];
+          return <div className="category-manage-row deleting" key={name}>
+            <p>{count > 0 ? `「${name}」下有 ${count} 笔记录，删除后将归入「${fallback}」。` : `确定删除「${name}」？`}</p>
+            <div className="category-confirm-actions">
+              <button type="button" className="danger-button" disabled={categoryBusy} onClick={() => void removeCategory(name)}>确认删除</button>
+              <button type="button" onClick={() => setDeletingCategory(null)}>取消</button>
+            </div>
+          </div>;
+        }
+        return <div className="category-manage-row" key={name}>
+          <span className="category-manage-name">{name}</span>
+          <small>{count} 笔</small>
+          <button type="button" className="category-icon-button" aria-label={`编辑${name}`} onClick={() => { setEditingCategory(name); setEditingCategoryName(name); }}><Pencil size={14} /></button>
+          <button type="button" className="category-icon-button" aria-label={`删除${name}`} disabled={list.length <= 1} onClick={() => setDeletingCategory(name)}><Trash2 size={14} /></button>
+        </div>;
+      })}</div>
+      <div className="category-add">
+        <input value={categoryDraft} maxLength={12} placeholder={`新增${categoryType === 'expense' ? '支出' : '收入'}分类`} onChange={(event) => setCategoryDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void addCategory(); } }} />
+        <button type="button" className="primary" disabled={categoryBusy} onClick={() => void addCategory()}>添加</button>
+      </div>
+    </div>;
+  }
+  /* eslint-enable react-hooks/refs */
+
   function renderSettings() {
     // 上传回调只在选择文件后执行，不会在渲染期间读取 ref。
     // eslint-disable-next-line react-hooks/refs
-    return <div className="settings-panel panel"><div className="section-head"><h2>账本设置</h2><BookHeart size={20} /></div><div className="setting-row"><div><h3>记账归属</h3></div><div className="owner-avatars">{owners.map((item) => { const photo = data.avatars?.[item] ?? (item === '华' ? '/huang.jpg' : ''); return <div className="owner-avatar-item" key={item}><label className={`owner-avatar-upload ${ownerClass(item)}`} aria-label={`上传${item}的头像`} aria-busy={avatarBusy === item}>{photo ? <span className="owner-avatar-image" style={{ backgroundImage: `url(${photo})` }} /> : <UserRound size={22} />}<Camera size={12} className="owner-avatar-camera" /><input type="file" accept="image/*" className="avatar-input" disabled={avatarBusy === item} onChange={(event) => chooseAvatar(event, item)} /></label><span className="owner-avatar-name">{item}</span></div>; })}</div></div><div className="setting-row"><div><h3>共享账本</h3></div><button className="outline-button share-button" onClick={() => setModal('share')}><LinkIcon size={15} />账本链接</button></div></div>;
+    return <div className="settings-panel panel"><div className="section-head"><h2>账本设置</h2><BookHeart size={20} /></div><div className="setting-row owner-setting"><div><h3>记账归属</h3></div><div className="owner-avatars">{data.owners.map((item) => { const photo = data.avatars?.[item.name] ?? (item.key === 'hua' ? '/huang.jpg' : ''); return <div className="owner-avatar-item" key={item.key}><label className={`owner-avatar-upload ${ownerClass(item.key)}`} aria-label={`上传${item.name}的头像`} aria-busy={avatarBusy === item.name}>{photo ? <span className="owner-avatar-image" style={{ backgroundImage: `url(${photo})` }} /> : <UserRound size={22} />}<Camera size={12} className="owner-avatar-camera" /><input type="file" accept="image/*" className="avatar-input" disabled={avatarBusy === item.name} onChange={(event) => chooseAvatar(event, item.name)} /></label>{editingOwner === item.key ? <div className="owner-name-editor"><input value={ownerNameDraft} maxLength={8} autoFocus onChange={(event) => setOwnerNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void saveOwnerName(item.key); } else if (event.key === 'Escape') setEditingOwner(null); }} /><button type="button" aria-label="保存名字" disabled={ownerBusy === item.key} onClick={() => void saveOwnerName(item.key)}><Check size={13} /></button><button type="button" aria-label="取消" onClick={() => setEditingOwner(null)}><X size={13} /></button></div> : <div className="owner-name-row"><span className="owner-avatar-name">{item.name}</span><button type="button" className="owner-name-edit" aria-label={`编辑${item.name}的名字`} onClick={() => startEditOwner(item)}><Pencil size={12} /></button></div>}</div>; })}</div></div><div className="setting-row"><div><h3>分类管理</h3></div><button className="outline-button" onClick={openCategories}>编辑分类</button></div><div className="setting-row"><div><h3>共享账本</h3></div><button className="outline-button share-button" onClick={() => setModal('share')}><LinkIcon size={15} />账本链接</button></div></div>;
   }
 
   const viewLabel: Record<View, string> = { today: '今天', records: '账目', analysis: '分析', settings: '账本设置' };
@@ -735,7 +916,7 @@ export default function Home() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar"><NextLink className="brand" href="/" onClick={() => goTo('today')} aria-label="两人账本首页"><span className="brand-icon"><BookHeart size={23} /></span><span>两人账本</span></NextLink><nav aria-label="主导航"><button aria-current={view === 'today' ? 'page' : undefined} className={view === 'today' ? 'active' : ''} onClick={() => goTo('today')}><Wallet size={19} />今天<span className="nav-dot" /></button><button aria-current={view === 'records' ? 'page' : undefined} className={view === 'records' ? 'active' : ''} onClick={() => goTo('records')}><CalendarDays size={19} />账目<span className="nav-dot" /></button><button aria-current={view === 'analysis' ? 'page' : undefined} className={view === 'analysis' ? 'active' : ''} onClick={() => goTo('analysis')}><BarChart3 size={19} />分析<span className="nav-dot" /></button><button aria-current={view === 'settings' ? 'page' : undefined} className={view === 'settings' ? 'active' : ''} onClick={() => goTo('settings')}><SlidersHorizontal size={19} />账本设置<span className="nav-dot" /></button></nav><div className="sidebar-bottom"><div className="sidebar-note"><Duo small /><p>生活的小事，<br />我们一起慢慢记。</p><span>EVERY LITTLE THING, TOGETHER.</span></div><button className="share-nav" onClick={() => setModal('share')}><Users size={18} />共享账本<ArrowUpRight size={15} /></button><div className="sidebar-foot"><span className="online-dot" />云端账本<span>人民币 CNY</span></div></div></aside>
+      <aside className="sidebar"><NextLink className="brand" href="/" onClick={() => goTo('today')} aria-label="两人账本首页"><span className="brand-icon"><BookHeart size={23} /></span><span>两人账本</span></NextLink><nav aria-label="主导航"><button aria-current={view === 'today' ? 'page' : undefined} className={view === 'today' ? 'active' : ''} onClick={() => goTo('today')}><Wallet size={19} />今天<span className="nav-dot" /></button><button aria-current={view === 'analysis' ? 'page' : undefined} className={view === 'analysis' ? 'active' : ''} onClick={() => goTo('analysis')}><BarChart3 size={19} />分析<span className="nav-dot" /></button><button aria-current={view === 'settings' ? 'page' : undefined} className={view === 'settings' ? 'active' : ''} onClick={() => goTo('settings')}><SlidersHorizontal size={19} />账本设置<span className="nav-dot" /></button></nav><div className="sidebar-bottom"><div className="sidebar-note"><Duo small /><p>生活的小事，<br />我们一起慢慢记。</p><span>EVERY LITTLE THING, TOGETHER.</span></div><button className="share-nav" onClick={() => setModal('share')}><Users size={18} />共享账本<ArrowUpRight size={15} /></button><div className="sidebar-foot"><span className="online-dot" />云端账本<span>人民币 CNY</span></div></div></aside>
       <main className="main"><header className="topbar"><div className="breadcrumb"><strong>{viewLabel[view]}</strong></div><div className="topbar-meta"><span className="topbar-date">{dateLabel(data.today)}<em> · 星期{dayOfWeek(data.today)}</em></span><span className="topbar-savings" aria-label={`当前共同存款 ${money(balance)} 元`}><b className={balance >= 0 ? 'income' : 'expense'}>¥ {money(balance)}</b></span></div></header>
         <div className="content">{error && <div className="error-banner" role="alert">{hasLoaded ? `${error}，当前显示上次同步的账目。` : error}<button onClick={() => { setLoading(true); void refresh(); }}><RefreshCw size={14} />重试</button></div>}
           {view !== 'today' && <section className="page-heading"><div><h1>{heading[view]}</h1></div></section>}
@@ -744,7 +925,7 @@ export default function Home() {
         </div>
       </main>
 
-      <dialog ref={dialogRef} aria-labelledby="entry-dialog-title" className="modal" onCancel={(event) => { event.preventDefault(); if (!busy) setModal(null); }} onClick={(event) => { if (event.target === event.currentTarget && !busy) setModal(null); }}><div className="modal-inner"><div className="modal-head"><div><h2 id="entry-dialog-title">{modal === 'entry' ? (editing ? '这一笔生活' : '记下这一笔') : '两个人，一本账'}</h2></div><button className="icon-button" aria-label="关闭" disabled={busy} onClick={() => setModal(null)}><X size={21} /></button></div>{modal === 'share' ? <div className="share-content"><Duo /><h3>把生活，放在同一本账里</h3><p>通过网站的分享设置邀请另一半。获准访问后，你们看到和编辑的是同一份账目。</p><div className="share-link"><span>{typeof window !== 'undefined' ? window.location.origin : '账本链接'}</span><button className="outline-button" onClick={async () => { try { await navigator.clipboard.writeText(window.location.origin); notify('账本链接已复制'); } catch { notify('复制失败，请从浏览器地址栏复制链接'); } }}><LinkIcon size={15} />复制</button></div><p className="share-tip">网站当前为私有。复制链接不会自动授予访问权限。</p></div> : <form onSubmit={save}><>{modal === 'entry' && <div className="type-tabs" role="group" aria-label="记账类型"><button type="button" aria-pressed={entryType === 'expense'} className={entryType === 'expense' ? 'selected' : ''} onClick={() => { setEntryType('expense'); if (!categoriesFor('expense').includes(entryCategory)) setEntryCategory(expenseCategories[0]); }}><ArrowUpRight size={17} />支出</button><button type="button" aria-pressed={entryType === 'income'} className={entryType === 'income' ? 'selected income-tab' : ''} onClick={() => { setEntryType('income'); if (!categoriesFor('income').includes(entryCategory)) setEntryCategory(incomeCategories[0]); }}><ArrowDownLeft size={17} />收入</button></div>}<label className="amount-field"><span>金额</span><div><b>¥</b><input aria-label="金额" inputMode="decimal" placeholder="0.00" value={amount} onChange={(event) => setAmount(event.target.value)} maxLength={12} required autoComplete="off" /></div></label><><label className="field-label">记在谁的名下 <span>*</span></label><div className="owner-choices">{owners.map((item, index) => { const photo = data.avatars?.[item] ?? (item === '华' ? '/huang.jpg' : ''); return <button key={item} type="button" aria-pressed={selectedOwner === item} className={`${ownerClass(item)}${selectedOwner === item ? ' selected' : ''}`} onClick={() => setSelectedOwner(item)}>{index === 2 ? <Users size={20} /> : photo ? <span className={`owner-choice-photo ${ownerClass(item)}`} style={{ backgroundImage: `url(${photo})` }} aria-hidden="true" /> : <UserRound size={20} />}<span>{item}</span>{selectedOwner === item && <Check size={14} />}</button>; })}</div><label className="field-label">分类 <span>*</span></label><div className="category-choices" role="group" aria-label="记账分类">{categoriesFor(entryType).map((item) => <button key={item} type="button" aria-pressed={entryCategory === item} className={entryCategory === item ? 'selected' : ''} onClick={() => setEntryCategory(item)}>{item}</button>)}</div><div className="form-field"><span>发生日期</span><DatePicker value={date} max={ledger.today} onChange={setDate} /></div><label className="form-field">备注<span className="optional">选填</span><input maxLength={100} placeholder="这一笔，是生活里的什么？" value={note} onChange={(event) => setNote(event.target.value)} /></label></>{formError && <p className="form-error" role="alert">{formError}</p>}<div className="modal-actions">{editing && <button type="button" className="delete-button" disabled={busy} onClick={() => { setFormError(''); setDeleting(editing); }}><Trash2 size={17} />删除</button>}<button className="primary" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Check size={18} />} {busy ? '保存中…' : editing ? '保存修改' : '保存'}</button></div></></form>}</div></dialog>
+      <dialog ref={dialogRef} aria-labelledby="entry-dialog-title" className="modal" onCancel={(event) => { event.preventDefault(); if (!busy) setModal(null); }} onClick={(event) => { if (event.target === event.currentTarget && !busy) setModal(null); }}><div className="modal-inner"><div className="modal-head"><div><h2 id="entry-dialog-title">{modal === 'entry' ? (editing ? '这一笔生活' : '记下这一笔') : modal === 'categories' ? '分类管理' : '两个人，一本账'}</h2></div><button className="icon-button" aria-label="关闭" disabled={busy} onClick={() => setModal(null)}><X size={21} /></button></div>{modal === 'share' ? <div className="share-content"><Duo /><h3>把生活，放在同一本账里</h3><p>通过网站的分享设置邀请另一半。获准访问后，你们看到和编辑的是同一份账目。</p><div className="share-link"><span>{typeof window !== 'undefined' ? window.location.origin : '账本链接'}</span><button className="outline-button" onClick={async () => { try { await navigator.clipboard.writeText(window.location.origin); notify('账本链接已复制'); } catch { notify('复制失败，请从浏览器地址栏复制链接'); } }}><LinkIcon size={15} />复制</button></div><p className="share-tip">网站当前为私有。复制链接不会自动授予访问权限。</p></div> : modal === 'categories' ? renderCategoryManager() : <form onSubmit={save}><>{modal === 'entry' && <div className="type-tabs" role="group" aria-label="记账类型"><button type="button" aria-pressed={entryType === 'expense'} className={entryType === 'expense' ? 'selected' : ''} onClick={() => { setEntryType('expense'); if (!data.categories.expense.includes(entryCategory)) setEntryCategory(data.categories.expense[0] ?? ''); }}><ArrowUpRight size={17} />支出</button><button type="button" aria-pressed={entryType === 'income'} className={entryType === 'income' ? 'selected income-tab' : ''} onClick={() => { setEntryType('income'); if (!data.categories.income.includes(entryCategory)) setEntryCategory(data.categories.income[0] ?? ''); }}><ArrowDownLeft size={17} />收入</button></div>}<label className="amount-field"><span>金额</span><div><b>¥</b><input aria-label="金额" inputMode="decimal" placeholder="0.00" value={amount} onChange={(event) => setAmount(event.target.value)} maxLength={12} required autoComplete="off" /></div></label><><label className="field-label">记在谁的名下 <span>*</span></label><div className="owner-choices">{data.owners.map((item) => { const photo = data.avatars?.[item.name] ?? (item.key === 'hua' ? '/huang.jpg' : ''); return <button key={item.key} type="button" aria-pressed={selectedOwner === item.name} className={`${ownerClass(item.key)}${selectedOwner === item.name ? ' selected' : ''}`} onClick={() => setSelectedOwner(item.name)}>{item.key === 'together' ? <Users size={20} /> : photo ? <span className={`owner-choice-photo ${ownerClass(item.key)}`} style={{ backgroundImage: `url(${photo})` }} aria-hidden="true" /> : <UserRound size={20} />}<span>{item.name}</span></button>; })}</div><label className="field-label">分类 <span>*</span></label><div className="category-choices" role="group" aria-label="记账分类">{data.categories[entryType].map((item) => <button key={item} type="button" aria-pressed={entryCategory === item} className={entryCategory === item ? 'selected' : ''} onClick={() => setEntryCategory(item)}>{item}</button>)}</div><div className="form-field"><span>发生日期</span><DatePicker value={date} max={ledger.today} onChange={setDate} /></div><label className="form-field">备注<span className="optional">选填</span><input maxLength={100} placeholder="这一笔，是生活里的什么？" value={note} onChange={(event) => setNote(event.target.value)} /></label></>{formError && <p className="form-error" role="alert">{formError}</p>}<div className="modal-actions">{editing && <button type="button" className="delete-button" disabled={busy} onClick={() => { setFormError(''); setDeleting(editing); }}><Trash2 size={17} />删除</button>}<button className="primary" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Check size={18} />} {busy ? '保存中…' : editing ? '保存修改' : '保存'}</button></div></></form>}</div></dialog>
       <dialog aria-labelledby="delete-dialog-title" className="modal confirm-modal" ref={deleteRef} onCancel={(event) => { event.preventDefault(); if (!busy) setDeleting(null); }}><div className="modal-inner"><div className="delete-illustration"><Trash2 size={25} /></div><h2 id="delete-dialog-title">删除这笔记录？</h2><p>“{deleting?.note || '这笔记录'}”将从共享账本删除，余额和月度汇总会同步更新。</p>{formError && <p className="form-error" role="alert">{formError}</p>}<div className="confirm-actions"><button className="outline-button" disabled={busy} onClick={() => setDeleting(null)}>再想想</button><button className="danger-button" disabled={busy} onClick={remove}>{busy ? '删除中…' : '确认删除'}</button></div></div></dialog>
       {toast && <div className="toast" role="status"><Check size={17} />{toast}</div>}
     </div>
