@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import NextLink from 'next/link';
 import {
-  ArrowDownLeft,
   ArrowRight,
   ArrowUpRight,
   BarChart3,
@@ -49,6 +48,8 @@ import { DatePicker } from '@/components/date-picker';
 import { Segmented } from '@/components/segmented';
 import { SlidingNav } from '@/components/sliding-nav';
 import { useIsomorphicLayoutEffect } from '@/hooks/use-isomorphic-layout-effect';
+import { useSheetDrag } from '@/components/use-sheet-drag';
+import { prefersReducedMotion } from '@/lib/motion';
 
 type OwnerInfo = { key: OwnerKey; name: string };
 type Ledger = {
@@ -60,6 +61,7 @@ type Ledger = {
 };
 type View = 'today' | 'records' | 'analysis' | 'settings';
 type EntryFilter = 'all' | Entry['type'];
+type ModalKind = 'entry' | 'share' | 'categories';
 
 type MutationBody =
   | { action: 'avatar'; ownerKey: OwnerKey; data: string }
@@ -80,12 +82,12 @@ const money = (n: number) =>
 const ownerClass = (key: string) => (key === 'qing' ? 'qing' : key === 'hua' ? 'hua' : 'together');
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
 
-function Duo({ small = false }: { small?: boolean }) {
+function Duo({ small = false, logo = false }: { small?: boolean; logo?: boolean }) {
   return (
-    <div className={`duo ${small ? 'small' : ''}`} aria-hidden="true">
+    <div className={`duo ${logo ? 'logo' : small ? 'small' : ''}`} aria-hidden="true">
       <div className="duo-one"><i /><i /><b /></div>
       <div className="duo-two"><i /><i /><b /></div>
-      <Heart className="duo-heart" size={small ? 13 : 22} fill="currentColor" />
+      <Heart className="duo-heart" size={logo ? 10 : small ? 13 : 22} fill="currentColor" />
     </div>
   );
 }
@@ -113,7 +115,8 @@ export default function Home() {
   const [owner, setOwner] = useState<OwnerKey | '全部'>('全部');
   const [type, setType] = useState<EntryFilter>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('全部');
-  const [modal, setModal] = useState<'entry' | 'share' | 'categories' | null>(null);
+  const [modal, setModal] = useState<ModalKind | null>(null);
+  const [modalClosing, setModalClosing] = useState(false);
   const [categoryType, setCategoryType] = useState<Entry['type']>('expense');
   const [categoryDraft, setCategoryDraft] = useState('');
   const [editingCategory, setEditingCategory] = useState<string | null>(null);
@@ -125,6 +128,7 @@ export default function Home() {
   const [ownerBusy, setOwnerBusy] = useState<OwnerKey | null>(null);
   const [editing, setEditing] = useState<Entry | null>(null);
   const [deleting, setDeleting] = useState<Entry | null>(null);
+  const [deletingClosing, setDeletingClosing] = useState(false);
   const [entryType, setEntryType] = useState<Entry['type']>('expense');
   const [entryCategory, setEntryCategory] = useState<string>(expenseCategories[0]);
   const [amount, setAmount] = useState('');
@@ -142,6 +146,8 @@ export default function Home() {
   const selectedDayRef = useRef<HTMLElement>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastOutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const modalCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deleteCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const notify = (text: string) => {
     setToast(text);
@@ -156,6 +162,60 @@ export default function Home() {
       }, 220);
     }, 3200);
   };
+
+  /** 打开弹层：如果上一次关闭动画还没结束，先取消它。 */
+  function openModal(next: ModalKind) {
+    if (modalCloseTimer.current) clearTimeout(modalCloseTimer.current);
+    setModalClosing(false);
+    setModal(next);
+  }
+
+  /** 先播放退场动画，再真正关闭原生 dialog。 */
+  function closeModal() {
+    if (!modal || modalClosing) return;
+    if (prefersReducedMotion()) {
+      if (modalCloseTimer.current) clearTimeout(modalCloseTimer.current);
+      dialogRef.current?.close();
+      setModal(null);
+      setModalClosing(false);
+      return;
+    }
+    setModalClosing(true);
+    if (modalCloseTimer.current) clearTimeout(modalCloseTimer.current);
+    modalCloseTimer.current = setTimeout(() => {
+      dialogRef.current?.close();
+      setModal(null);
+      setModalClosing(false);
+    }, 260);
+  }
+
+  function openDelete(entry: Entry) {
+    if (deleteCloseTimer.current) clearTimeout(deleteCloseTimer.current);
+    setDeletingClosing(false);
+    setDeleting(entry);
+  }
+
+  function closeDelete() {
+    if (!deleting || deletingClosing) return;
+    if (prefersReducedMotion()) {
+      if (deleteCloseTimer.current) clearTimeout(deleteCloseTimer.current);
+      deleteRef.current?.close();
+      setDeleting(null);
+      setDeletingClosing(false);
+      return;
+    }
+    setDeletingClosing(true);
+    if (deleteCloseTimer.current) clearTimeout(deleteCloseTimer.current);
+    deleteCloseTimer.current = setTimeout(() => {
+      deleteRef.current?.close();
+      setDeleting(null);
+      setDeletingClosing(false);
+    }, 260);
+  }
+
+  // 移动端底部弹层：从顶部抓手向下拖动即可关闭。
+  const entrySheet = useSheetDrag(closeModal);
+  const deleteSheet = useSheetDrag(closeDelete);
 
   const refresh = useCallback((signal?: AbortSignal) => {
     return fetch('/api/ledger', { cache: 'no-store', signal })
@@ -189,16 +249,22 @@ export default function Home() {
   useEffect(() => () => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     if (toastOutTimer.current) clearTimeout(toastOutTimer.current);
+    if (modalCloseTimer.current) clearTimeout(modalCloseTimer.current);
+    if (deleteCloseTimer.current) clearTimeout(deleteCloseTimer.current);
   }, []);
 
   useEffect(() => {
-    if (modal) dialogRef.current?.showModal();
-    else dialogRef.current?.close();
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (modal && !dialog.open) dialog.showModal();
+    else if (!modal && dialog.open) dialog.close();
   }, [modal]);
 
   useEffect(() => {
-    if (deleting) deleteRef.current?.showModal();
-    else deleteRef.current?.close();
+    const dialog = deleteRef.current;
+    if (!dialog) return;
+    if (deleting && !dialog.open) dialog.showModal();
+    else if (!deleting && dialog.open) dialog.close();
   }, [deleting]);
 
   const data = ledger;
@@ -346,7 +412,7 @@ export default function Home() {
     setDate(entry?.date ?? presetDate);
     setNote(entry?.note ?? '');
     setFormError('');
-    setModal('entry');
+    openModal('entry');
   }
 
   async function mutate(body: MutationBody) {
@@ -430,7 +496,7 @@ export default function Home() {
     setCategoryDraft('');
     setEditingCategory(null);
     setDeletingCategory(null);
-    setModal('categories');
+    openModal('categories');
   }
 
   function startEditOwner(item: OwnerInfo) {
@@ -532,7 +598,7 @@ export default function Home() {
       setType('all');
       if (date !== data.today || view !== 'today') { goTo('records'); setRecordMode('calendar'); }
       notify(editing ? '记录已更新' : '记下了，又是生活的一笔');
-      setModal(null);
+      closeModal();
     } catch (caught) {
       setFormError(caught instanceof Error ? caught.message : '保存失败');
     } finally {
@@ -546,8 +612,8 @@ export default function Home() {
     setFormError('');
     try {
       await mutate({ action: 'delete', id: deleting.id, revision: deleting.revision });
-      setDeleting(null);
-      setModal(null);
+      closeDelete();
+      closeModal();
       notify('记录已删除');
     } catch (caught) {
       setFormError(caught instanceof Error ? caught.message : '删除失败');
@@ -585,7 +651,7 @@ export default function Home() {
       return (
         <button className="entry-row" key={entry.id} style={{ animationDelay: `${Math.min(index, 8) * 24}ms` }} onClick={() => openEntry(entry)}>
           <span className={`entry-icon ${entry.type === 'income' ? 'income-bg' : 'expense-bg'}`} aria-hidden="true">
-            {entry.type === 'income' ? <ArrowDownLeft size={19} /> : entry.ownerKey === 'together' ? <Heart size={18} /> : <ArrowUpRight size={19} />}
+            {entry.type === 'income' ? <MoneyBagIcon size={18} /> : <JapaneseYen size={18} strokeWidth={2} />}
           </span>
           <span className="entry-desc">
             <strong>{entry.note || (entry.type === 'income' ? '一笔收入' : '一笔支出')}</strong>
@@ -621,8 +687,8 @@ export default function Home() {
           </div>
         </section>
         <section className="today-summary-grid" aria-label="今日已记录收支">
-          <div className="today-summary-card"><span>今日支出</span><strong className="expense">¥ {money(todaySummary.expense)}</strong><small>{todayEntries.filter((entry) => entry.type === 'expense').length} 笔记录</small></div>
-          <div className="today-summary-card"><span>今日收入</span><strong className="income">¥ {money(todaySummary.income)}</strong><small>{todayEntries.filter((entry) => entry.type === 'income').length} 笔记录</small></div>
+          <div className="today-summary-card"><span>今日支出</span><strong className="expense">¥ {money(todaySummary.expense)}</strong><small>{todayEntries.filter((entry) => entry.type === 'expense').length} 笔</small></div>
+          <div className="today-summary-card"><span>今日收入</span><strong className="income">¥ {money(todaySummary.income)}</strong><small>{todayEntries.filter((entry) => entry.type === 'income').length} 笔</small></div>
         </section>
         <section className="today-records panel">
           <div className="section-head"><div><h2>今天的记录 <span>{todayEntries.length} 笔</span></h2></div><button className="text-button" onClick={() => { goTo('records'); setRecordMode('calendar'); resetFilters(); }}>查看日历 <CalendarDays size={16} /></button></div>
@@ -754,19 +820,42 @@ export default function Home() {
   function renderAnalysis() {
     return (
       <>
-        <section className="analysis-monthly" aria-labelledby="analysis-monthly-title">
-        <h2 id="analysis-monthly-title">月度收支</h2>
+        <section className="analysis-monthly" aria-label="月度收支">
         {renderMonthToolbar()}
         {renderFilters(true)}
         <section className="analysis-summary-grid" aria-label="所选月份和归属的收支汇总">
           <div className="analysis-card"><span>当月收入</span><strong className="income">¥ {money(monthStats.income)}</strong><small>{analysisDays.filter((item) => item.income > 0).length} 天有收入记录</small></div>
-          <div className="analysis-card"><span>当月支出</span><strong className="expense">¥ {money(monthStats.expense)}</strong><small>日均 ¥ {money(averageExpense)} · 按 {elapsedDays} 天</small></div>
+          <div className="analysis-card"><span>当月支出</span><strong className="expense">¥ {money(monthStats.expense)}</strong><small>日均 ¥ {money(averageExpense)} · {elapsedDays} 天</small></div>
           <div className="analysis-card"><span>当月盈余</span><strong className={monthStats.surplus >= 0 ? 'income' : 'expense'}>¥ {money(monthStats.surplus)}</strong><small>{recordedDays} 天有记录 · {analysisDays.reduce((sum, item) => sum + item.count, 0)} 笔</small></div>
           <div className="analysis-card"><span>历史盈余</span><strong className={historySurplus >= 0 ? 'income' : 'expense'}>¥ {money(historySurplus)}</strong><small>截至 {monthLabel}</small></div>
         </section>
-        <div className="analysis-highlight"><span>支出最高日</span><strong>{maxExpenseDay ? `¥ ${money(maxExpenseDay.expense)}` : '—'}</strong><small>{maxExpenseDay ? `${dateLabel(maxExpenseDay.date)} · 星期${dayOfWeek(maxExpenseDay.date)}` : '当月尚无支出记录'}</small></div>
+        <div className="analysis-highlight">
+          <span className="analysis-highlight-badge"><CalendarDays size={16} aria-hidden="true" /></span>
+          <div className="analysis-highlight-copy">
+            <span>支出最高日</span>
+            <small>{maxExpenseDay ? `${dateLabel(maxExpenseDay.date)} · 星期${dayOfWeek(maxExpenseDay.date)} · ${maxExpenseDay.count} 笔记录` : '当月尚无支出记录'}</small>
+          </div>
+          <div className="analysis-highlight-value">
+            <strong>{maxExpenseDay ? `¥ ${money(maxExpenseDay.expense)}` : '—'}</strong>
+            {maxExpenseDay && (
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => {
+                  selectDay(maxExpenseDay.date);
+                  setOwner(analysisOwner);
+                  setType('all');
+                  setRecordMode('calendar');
+                  goTo('records');
+                }}
+              >
+                查看当天 <ArrowRight size={14} />
+              </button>
+            )}
+          </div>
+        </div>
         <div className="analysis-grid">
-          <section className="analysis-owner panel"><div className="section-head"><div><h2>按归属看收支</h2></div><Users size={20} aria-hidden="true" /></div><div className="owner-analysis-list">{monthStats.byOwner.filter((item) => analysisOwnerName === null || item.owner === analysisOwnerName).map((item) => { const ownerKey = ownerKeyByName.get(item.owner) ?? 'together'; const photo = photoForOwner(ownerKey); return <div className="owner-analysis-row" key={ownerKey}><div className={`owner-avatar ${ownerClass(ownerKey)}${photo ? ' has-photo' : ''}`} style={photo ? { backgroundImage: `url(${photo})` } : undefined}>{photo ? null : ownerKey === 'together' ? <Users size={17} /> : <UserRound size={17} />}</div><span>{item.owner}</span><div className="owner-analysis-values"><strong>收入 ¥ {money(item.income)}</strong><strong>支出 ¥ {money(item.expense)}</strong><small>占当月支出 {monthStats.expense ? Math.round(item.expense / monthStats.expense * 100) : 0}%</small></div></div>; })}</div></section>
+          <section className="analysis-owner panel"><div className="section-head"><div><h2>按归属看收支</h2></div><Users size={20} aria-hidden="true" /></div><div className="owner-analysis-list">{monthStats.byOwner.filter((item) => analysisOwnerName === null || item.owner === analysisOwnerName).map((item) => { const ownerKey = ownerKeyByName.get(item.owner) ?? 'together'; const photo = photoForOwner(ownerKey); return <div className="owner-analysis-row" key={ownerKey}><div className={`owner-avatar ${ownerClass(ownerKey)}${photo ? ' has-photo' : ''}`} style={photo ? { backgroundImage: `url(${photo})` } : undefined}>{photo ? null : ownerKey === 'together' ? <Users size={17} /> : <UserRound size={17} />}</div><span>{item.owner}</span><div className="owner-analysis-values"><strong className="income">收入 ¥ {money(item.income)}</strong><strong className="expense">支出 ¥ {money(item.expense)}</strong><small>占当月支出 {monthStats.expense ? Math.round(item.expense / monthStats.expense * 100) : 0}%</small></div></div>; })}</div></section>
           <section className="analysis-categories panel">
             <div className="section-head"><div><h2>分类占比</h2></div><PieChart size={20} aria-hidden="true" /></div>
             <div className="category-breakdown">
@@ -797,7 +886,7 @@ export default function Home() {
         </div>
         <section className="analysis-trend panel">
           <div className="section-head"><div><h2>每天的收支趋势</h2></div><TrendingUp size={20} aria-hidden="true" /></div>
-          {recordedDays ? <><div className="trend-scroll" ref={trendScrollRef} tabIndex={0} role="region" aria-label="每日收支柱状图，可横向滚动"><div className="trend-chart">{trendDays.map((item, index) => <button className="trend-column" key={item.date} aria-pressed={trendSelection.date === item.date} aria-label={`${item.date}，${item.count ? `收入${money(item.income)}元，支出${money(item.expense)}元` : '尚无记录'}`} title={`${dateLabel(item.date)}：收入 ¥${money(item.income)} / 支出 ¥${money(item.expense)}`} onClick={() => setTrendDay(item.date)}><span className="trend-bars" aria-hidden="true"><span className="trend-bar income" style={{ height: `${item.income / maxDailyAmount * 100}%`, animationDelay: `${Math.min(index, 24) * 16}ms` }} /><span className="trend-bar expense" style={{ height: `${item.expense / maxDailyAmount * 100}%`, animationDelay: `${Math.min(index, 24) * 16}ms` }} /></span><small>{Number(item.date.slice(8))}</small></button>)}</div></div><div className="trend-readout" aria-live="polite"><strong>{dateLabel(trendSelection.date)}</strong><span>{trendSelection.count ? `收入 ¥${money(trendSelection.income)} · 支出 ¥${money(trendSelection.expense)}` : '尚无记录'}</span><button className="text-button" onClick={() => { selectDay(trendSelection.date); setOwner(analysisOwner); setType('all'); setRecordMode('calendar'); goTo('records'); }}>查看当天<ArrowRight size={15} /></button></div></> : <div className="empty"><BarChart3 size={28} /><h3>当月还没有记录</h3><p>记录收入和支出后，即可查看每天的变化。</p></div>}
+          {recordedDays ? <><div className="trend-scroll" ref={trendScrollRef} tabIndex={0} role="region" aria-label="每日收支柱状图，可横向滚动"><div className="trend-chart">{trendDays.map((item, index) => <button className="trend-column" key={item.date} aria-pressed={trendSelection.date === item.date} aria-label={`${item.date}，${item.count ? `收入${money(item.income)}元，支出${money(item.expense)}元` : '尚无记录'}`} title={`${dateLabel(item.date)}：收入 ¥${money(item.income)} / 支出 ¥${money(item.expense)}`} onClick={() => setTrendDay(item.date)}><span className="trend-bars" aria-hidden="true"><span className="trend-bar income" style={{ height: `${item.income / maxDailyAmount * 100}%`, animationDelay: `${Math.min(index, 24) * 16}ms` }} /><span className="trend-bar expense" style={{ height: `${item.expense / maxDailyAmount * 100}%`, animationDelay: `${Math.min(index, 24) * 16}ms` }} /></span><small>{Number(item.date.slice(8))}</small></button>)}</div></div><div className="trend-readout" aria-live="polite"><strong>{dateLabel(trendSelection.date)}</strong><span>{trendSelection.count ? `收入 ¥${money(trendSelection.income)} · 支出 ¥${money(trendSelection.expense)}` : '尚无记录'}</span><button className="text-button" onClick={() => { selectDay(trendSelection.date); setOwner(analysisOwner); setType('all'); setRecordMode('calendar'); goTo('records'); }}>查看当天<ArrowRight size={15} /></button></div></> : <div className="empty"><BarChart3 size={28} /><h3>当月还没有记录</h3></div>}
           <div className="trend-legend"><span><i className="legend-income" />收入</span><span><i className="legend-expense" />支出</span><span>共 {elapsedDays} 天</span></div>
           {recordedDays > 0 && <details className="analysis-table"><summary>查看每日数据</summary><div className="table-scroll"><table><caption>{monthLabel} · {analysisOwnerName ?? '全部归属'}</caption><thead><tr><th scope="col">日期</th><th scope="col">收入</th><th scope="col">支出</th><th scope="col">结余</th><th scope="col">记录</th></tr></thead><tbody>{trendDays.map((item) => <tr key={item.date}><th scope="row">{dateLabel(item.date)}</th><td>{item.count ? money(item.income) : '—'}</td><td>{item.count ? money(item.expense) : '—'}</td><td>{item.count ? money(item.surplus) : '—'}</td><td>{item.count ? `${item.count} 笔` : '未记录'}</td></tr>)}</tbody></table></div></details>}
         </section>
@@ -869,12 +958,11 @@ export default function Home() {
         })}</div>
       </div>
       <div className="setting-row"><div className="setting-copy"><h3>分类管理</h3></div><button className="outline-button" onClick={openCategories}>编辑分类</button></div>
-      <div className="setting-row"><div className="setting-copy"><h3>共享账本</h3></div><button className="outline-button share-button" onClick={() => setModal('share')}><LinkIcon size={15} />账本链接</button></div>
+      <div className="setting-row"><div className="setting-copy"><h3>共享账本</h3></div><button className="outline-button share-button" onClick={() => openModal('share')}><LinkIcon size={15} />账本链接</button></div>
     </div>;
   }
   /* eslint-enable react-hooks/refs */
 
-  const viewLabel: Record<View, string> = { today: '今天', records: '账目', analysis: '分析', settings: '账本设置' };
   const heading: Record<View, string> = {
     today: '把每天，记在一起。',
     records: '每一天，都有迹可循。',
@@ -884,8 +972,8 @@ export default function Home() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar"><NextLink className="brand" href="/" onClick={() => goTo('today')} aria-label="两人账本首页"><span className="brand-icon"><BookHeart size={23} /></span><span>两人账本</span></NextLink><SlidingNav active={view} aria-label="主导航"><button aria-current={view === 'today' ? 'page' : undefined} className={view === 'today' ? 'active' : ''} onClick={() => goTo('today')}><Wallet size={19} />今天<span className="nav-dot" /></button><button aria-current={view === 'analysis' ? 'page' : undefined} className={view === 'analysis' ? 'active' : ''} onClick={() => goTo('analysis')}><BarChart3 size={19} />分析<span className="nav-dot" /></button><button aria-current={view === 'settings' ? 'page' : undefined} className={view === 'settings' ? 'active' : ''} onClick={() => goTo('settings')}><SlidersHorizontal size={19} />账本设置<span className="nav-dot" /></button></SlidingNav><div className="sidebar-bottom"><div className="sidebar-note"><Duo small /><p>生活的小事，<br />我们一起慢慢记。</p><span>EVERY LITTLE THING, TOGETHER.</span></div><button className="share-nav" onClick={() => setModal('share')}><Users size={18} />共享账本<ArrowUpRight size={15} /></button><div className="sidebar-foot"><span className="online-dot" />云端账本<span>人民币 CNY</span></div></div></aside>
-      <main className="main"><header className="topbar"><div className="breadcrumb"><strong key={view} className="breadcrumb-title">{viewLabel[view]}</strong></div><div className="topbar-meta"><span className="topbar-date">{dateLabel(data.today)}<em> · 星期{dayOfWeek(data.today)}</em></span><span className="topbar-savings" aria-label={`当前共同存款 ${money(balance)} 元`}><b className={balance >= 0 ? 'income' : 'expense'}>¥ {money(balance)}</b></span></div></header>
+      <aside className="sidebar"><NextLink className="brand" href="/" onClick={() => goTo('today')} aria-label="两人账本首页"><span className="brand-icon"><BookHeart size={23} /></span><span>两人账本</span></NextLink><SlidingNav active={view} aria-label="主导航"><button aria-current={view === 'today' ? 'page' : undefined} className={view === 'today' ? 'active' : ''} onClick={() => goTo('today')}><Wallet size={19} />今天<span className="nav-dot" /></button><button aria-current={view === 'analysis' ? 'page' : undefined} className={view === 'analysis' ? 'active' : ''} onClick={() => goTo('analysis')}><BarChart3 size={19} />分析<span className="nav-dot" /></button><button aria-current={view === 'settings' ? 'page' : undefined} className={view === 'settings' ? 'active' : ''} onClick={() => goTo('settings')}><SlidersHorizontal size={19} />账本设置<span className="nav-dot" /></button></SlidingNav><div className="sidebar-bottom"><div className="sidebar-note"><Duo small /><p>生活的小事，<br />我们一起慢慢记。</p><span>EVERY LITTLE THING, TOGETHER.</span></div><button className="share-nav" onClick={() => openModal('share')}><Users size={18} />共享账本<ArrowUpRight size={15} /></button><div className="sidebar-foot"><span className="online-dot" />云端账本<span>人民币 CNY</span></div></div></aside>
+      <main className="main"><header className="topbar"><span className="topbar-logo" role="img" aria-label="利通" title="利通"><Duo logo /></span><div className="topbar-meta"><span className="topbar-date">{dateLabel(data.today)}<em> · 星期{dayOfWeek(data.today)}</em></span><span className="topbar-savings" aria-label={`当前共同存款 ${money(balance)} 元`}><b className={balance >= 0 ? 'income' : 'expense'}>¥ {money(balance)}</b></span></div></header>
         <div className="content">{error && <div className="error-banner" role="alert">{hasLoaded ? `${error}，当前显示上次同步的账目。` : error}<button onClick={() => { setLoading(true); void refresh(); }}><RefreshCw size={14} />重试</button></div>}
           {view !== 'today' && <section className="page-heading page-heading-in" key={`heading-${view}`}><div><h1>{heading[view]}</h1></div></section>}
           {!dataReady ? <section className="panel empty" role="status">{loading ? <><LoaderCircle className="spin" size={26} /><h2>正在翻开账本…</h2></> : <><BookHeart size={30} /><h2>账目暂时无法加载</h2><p>请检查网络后重试。</p><button className="outline-button" onClick={() => { setLoading(true); void refresh(); }}>重新加载</button></>}</section> : (
@@ -897,7 +985,7 @@ export default function Home() {
         </div>
       </main>
 
-      <dialog ref={dialogRef} aria-labelledby="entry-dialog-title" className="modal" onCancel={(event) => { event.preventDefault(); if (!busy) setModal(null); }} onClick={(event) => { if (event.target === event.currentTarget && !busy) setModal(null); }}><div className="modal-inner"><div className="modal-head"><div><h2 id="entry-dialog-title">{modal === 'entry' ? (editing ? '这一笔生活' : '记下这一笔') : modal === 'categories' ? '分类管理' : '两个人，一本账'}</h2></div><button className="icon-button" aria-label="关闭" disabled={busy} onClick={() => setModal(null)}><X size={21} /></button></div>{modal === 'share' ? <div className="share-content"><Duo /><h3>把生活，放在同一本账里</h3><p>通过网站的分享设置邀请另一半。获准访问后，你们看到和编辑的是同一份账目。</p><div className="share-link"><span>{typeof window !== 'undefined' ? window.location.origin : '账本链接'}</span><button className="outline-button" onClick={async () => { try { await navigator.clipboard.writeText(window.location.origin); notify('账本链接已复制'); } catch { notify('复制失败，请从浏览器地址栏复制链接'); } }}><LinkIcon size={15} />复制</button></div><p className="share-tip">网站当前为私有。复制链接不会自动授予访问权限。</p></div> : modal === 'categories' ? renderCategoryManager() : <form onSubmit={save}><>{modal === 'entry' && <Segmented className="type-tabs" active={entryType} role="group" aria-label="记账类型"><button type="button" aria-pressed={entryType === 'expense'} className={entryType === 'expense' ? 'selected' : ''} onClick={() => { setEntryType('expense'); if (!data.categories.expense.includes(entryCategory)) setEntryCategory(data.categories.expense[0] ?? ''); }}><ArrowUpRight size={17} />支出</button><button type="button" aria-pressed={entryType === 'income'} className={entryType === 'income' ? 'selected income-tab' : ''} onClick={() => { setEntryType('income'); if (!data.categories.income.includes(entryCategory)) setEntryCategory(data.categories.income[0] ?? ''); }}><ArrowDownLeft size={17} />收入</button></Segmented>}<label className="amount-field"><span>金额</span><div><b>¥</b><input aria-label="金额" inputMode="decimal" placeholder="0.00" value={amount} onChange={(event) => setAmount(event.target.value)} maxLength={12} required autoComplete="off" /></div></label><><label className="field-label">记在谁的名下 <span>*</span></label><div className="owner-choices">{data.owners.map((item) => {
+      <dialog ref={dialogRef} aria-labelledby="entry-dialog-title" className={`modal${modalClosing ? ' is-closing' : ''}${entrySheet.dragging ? ' is-dragging' : ''}`} style={entrySheet.style} onCancel={(event) => { event.preventDefault(); if (!busy) closeModal(); }} onClick={(event) => { if (event.target === event.currentTarget && !busy) closeModal(); }}><div className="modal-inner"><span className="modal-grabber" aria-hidden="true" {...entrySheet.handleProps} /><div className="modal-head"><div><h2 id="entry-dialog-title" className={modal === 'categories' ? 'visually-hidden' : undefined}>{modal === 'entry' ? (editing ? '这一笔生活' : '记下这一笔') : modal === 'categories' ? '分类管理' : '两个人，一本账'}</h2></div><button className="icon-button" aria-label="关闭" disabled={busy} onClick={closeModal}><X size={21} /></button></div>{modal === 'share' ? <div className="share-content"><Duo /><h3>把生活，放在同一本账里</h3><p>通过网站的分享设置邀请另一半。</p><div className="share-link"><span>{typeof window !== 'undefined' ? window.location.origin : '账本链接'}</span><button className="outline-button" onClick={async () => { try { await navigator.clipboard.writeText(window.location.origin); notify('账本链接已复制'); } catch { notify('复制失败，请从浏览器地址栏复制链接'); } }}><LinkIcon size={15} />复制</button></div></div> : modal === 'categories' ? renderCategoryManager() : <form onSubmit={save}><>{modal === 'entry' && <Segmented className="type-tabs" active={entryType} role="group" aria-label="记账类型"><button type="button" aria-pressed={entryType === 'expense'} className={entryType === 'expense' ? 'selected' : ''} onClick={() => { setEntryType('expense'); if (!data.categories.expense.includes(entryCategory)) setEntryCategory(data.categories.expense[0] ?? ''); }}><JapaneseYen size={17} strokeWidth={2} />支出</button><button type="button" aria-pressed={entryType === 'income'} className={entryType === 'income' ? 'selected income-tab' : ''} onClick={() => { setEntryType('income'); if (!data.categories.income.includes(entryCategory)) setEntryCategory(data.categories.income[0] ?? ''); }}><MoneyBagIcon size={17} />收入</button></Segmented>}<label className="amount-field"><span>金额</span><div><b>¥</b><input aria-label="金额" inputMode="decimal" placeholder="0.00" value={amount} onChange={(event) => setAmount(event.target.value)} maxLength={12} required autoComplete="off" /></div></label><><label className="field-label">记在谁的名下 <span>*</span></label><div className="owner-choices">{data.owners.map((item) => {
               const photo = photoForOwner(item.key);
               return <button key={item.key} type="button" aria-pressed={selectedOwner === item.key} className={`${ownerClass(item.key)}${selectedOwner === item.key ? ' selected' : ''}`} onClick={() => setSelectedOwner(item.key)}>
                 <span className={`owner-choice-avatar ${ownerClass(item.key)}${photo ? ' has-photo' : ''}`}>
@@ -906,8 +994,8 @@ export default function Home() {
                 </span>
                 <span className="owner-choice-name">{item.name}</span>
               </button>;
-            })}</div><label className="field-label">分类 <span>*</span></label><div className="category-choices" role="group" aria-label="记账分类">{data.categories[entryType].map((item) => <button key={item} type="button" aria-pressed={entryCategory === item} className={entryCategory === item ? 'selected' : ''} onClick={() => setEntryCategory(item)}>{item}</button>)}</div><div className="form-field"><span>发生日期</span><DatePicker value={date} max={ledger.today} onChange={setDate} /></div><label className="form-field">备注<span className="optional">选填</span><input maxLength={100} placeholder="这一笔，是生活里的什么？" value={note} onChange={(event) => setNote(event.target.value)} /></label></>{formError && <p className="form-error" role="alert">{formError}</p>}<div className="modal-actions">{editing && <button type="button" className="delete-button" disabled={busy} onClick={() => { setFormError(''); setDeleting(editing); }}><Trash2 size={17} />删除</button>}<button className="primary" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Check size={18} />} {busy ? '保存中…' : editing ? '保存修改' : '保存'}</button></div></></form>}</div></dialog>
-      <dialog aria-labelledby="delete-dialog-title" className="modal confirm-modal" ref={deleteRef} onCancel={(event) => { event.preventDefault(); if (!busy) setDeleting(null); }}><div className="modal-inner"><div className="delete-illustration"><Trash2 size={25} /></div><h2 id="delete-dialog-title">删除这笔记录？</h2><p>“{deleting?.note || '这笔记录'}”将从共享账本删除，余额和月度汇总会同步更新。</p>{formError && <p className="form-error" role="alert">{formError}</p>}<div className="confirm-actions"><button className="outline-button" disabled={busy} onClick={() => setDeleting(null)}>再想想</button><button className="danger-button" disabled={busy} onClick={remove}>{busy ? '删除中…' : '确认删除'}</button></div></div></dialog>
+            })}</div><label className="field-label">分类 <span>*</span></label><div className="category-choices" role="group" aria-label="记账分类">{data.categories[entryType].map((item) => <button key={item} type="button" aria-pressed={entryCategory === item} className={entryCategory === item ? 'selected' : ''} onClick={() => setEntryCategory(item)}>{item}</button>)}</div><div className="form-field"><span>发生日期</span><DatePicker value={date} max={ledger.today} onChange={setDate} /></div><label className="form-field">备注<span className="optional">选填</span><input maxLength={100} placeholder="这一笔，是生活里的什么？" value={note} onChange={(event) => setNote(event.target.value)} /></label></>{formError && <p className="form-error" role="alert">{formError}</p>}<div className="modal-actions">{editing && <button type="button" className="delete-button" disabled={busy} onClick={() => { setFormError(''); if (editing) openDelete(editing); }}><Trash2 size={17} />删除</button>}<button className="primary" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Check size={18} />} {busy ? '保存中…' : editing ? '保存修改' : '保存'}</button></div></></form>}</div></dialog>
+      <dialog aria-labelledby="delete-dialog-title" className={`modal confirm-modal${deletingClosing ? ' is-closing' : ''}${deleteSheet.dragging ? ' is-dragging' : ''}`} style={deleteSheet.style} ref={deleteRef} onCancel={(event) => { event.preventDefault(); if (!busy) closeDelete(); }} onClick={(event) => { if (event.target === event.currentTarget && !busy) closeDelete(); }}><div className="modal-inner"><span className="modal-grabber" aria-hidden="true" {...deleteSheet.handleProps} /><div className="delete-illustration"><Trash2 size={25} /></div><h2 id="delete-dialog-title">删除这笔记录？</h2><p>“{deleting?.note || '这笔记录'}”将从共享账本删除，余额和月度汇总会同步更新。</p>{formError && <p className="form-error" role="alert">{formError}</p>}<div className="confirm-actions"><button className="outline-button" disabled={busy} onClick={closeDelete}>再想想</button><button className="danger-button" disabled={busy} onClick={remove}>{busy ? '删除中…' : '确认删除'}</button></div></div></dialog>
       {toast && <div className={`toast${toastLeaving ? ' leaving' : ''}`} role="status"><Check size={17} />{toast}</div>}
     </div>
   );
