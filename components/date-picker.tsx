@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
+import { prefersReducedMotion } from '@/lib/motion';
 
 const MIN_MONTH = '1900-01';
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
@@ -31,11 +32,15 @@ type DatePickerProps = {
 
 export function DatePicker({ value, max, onChange }: DatePickerProps) {
   const [open, setOpen] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [page, setPage] = useState<{ key: number; dir: 'next' | 'prev' }>({ key: 0, dir: 'next' });
   const [viewMonth, setViewMonth] = useState(value.slice(0, 7));
   const [position, setPosition] = useState<{ left: number; top: number; width: number; placement: 'top' | 'bottom' } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+  const closingRef = useRef(false);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const label = `${Number(value.slice(0, 4))} 年 ${Number(value.slice(5, 7))} 月 ${Number(value.slice(8, 10))} 日`;
   const maxMonth = max.slice(0, 7);
@@ -46,20 +51,53 @@ export function DatePicker({ value, max, onChange }: DatePickerProps) {
     return day >= 1 && day <= days ? `${viewMonth}-${pad(day)}` : null;
   });
 
+  const closePicker = useCallback((immediate = false) => {
+    if (immediate || prefersReducedMotion()) {
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+      closingRef.current = false;
+      setClosing(false);
+      setOpen(false);
+      return;
+    }
+    if (closingRef.current) return;
+    closingRef.current = true;
+    setClosing(true);
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    closeTimer.current = setTimeout(() => {
+      closingRef.current = false;
+      setClosing(false);
+      setOpen(false);
+    }, 150);
+  }, []);
+
+  const openPicker = useCallback(() => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    closingRef.current = false;
+    setClosing(false);
+    setOpen(true);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!open) return;
     gridRef.current?.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.focus();
 
     const onPointerDown = (event: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) closePicker();
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setOpen(false);
+        closePicker();
         triggerRef.current?.focus();
       }
     };
-    const close = () => setOpen(false);
+    const close = () => closePicker();
 
     document.addEventListener('pointerdown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
@@ -71,25 +109,33 @@ export function DatePicker({ value, max, onChange }: DatePickerProps) {
       window.removeEventListener('scroll', close, true);
       window.removeEventListener('resize', close);
     };
-  }, [open]);
+  }, [open, closePicker]);
 
   useEffect(() => {
     const dialog = triggerRef.current?.closest('dialog');
     if (!dialog) return;
-    const close = () => setOpen(false);
+    const close = () => closePicker(true);
     dialog.addEventListener('close', close);
     return () => dialog.removeEventListener('close', close);
-  }, []);
+  }, [closePicker]);
 
   function togglePicker() {
+    if (closing) {
+      // 关闭动画进行中再次点击：取消关闭，保持打开。
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+      closingRef.current = false;
+      setClosing(false);
+      return;
+    }
     if (open) {
-      setOpen(false);
+      closePicker();
       return;
     }
     const rect = triggerRef.current?.getBoundingClientRect();
     setViewMonth(value.slice(0, 7));
+    setPage({ key: 0, dir: 'next' });
     if (!rect) {
-      setOpen(true);
+      openPicker();
       return;
     }
     const width = Math.max(rect.width, 288);
@@ -103,19 +149,20 @@ export function DatePicker({ value, max, onChange }: DatePickerProps) {
       width,
       placement,
     });
-    setOpen(true);
+    openPicker();
   }
 
   function select(dateValue: string) {
     if (dateValue > max) return;
     onChange(dateValue);
-    setOpen(false);
+    closePicker();
     triggerRef.current?.focus();
   }
 
   function changeMonth(diff: number) {
     const next = shiftMonth(viewMonth, diff);
     if (next < MIN_MONTH || next > maxMonth) return;
+    setPage((current) => ({ key: current.key + 1, dir: diff > 0 ? 'next' : 'prev' }));
     setViewMonth(next);
   }
 
@@ -132,12 +179,11 @@ export function DatePicker({ value, max, onChange }: DatePickerProps) {
       >
         <CalendarDays size={16} aria-hidden="true" />
         <span>{label}</span>
-        <ChevronDown className="date-select-chevron" size={14} aria-hidden="true" />
       </button>
 
       {open && position && (
         <div
-          className={`date-popover ${position.placement}`}
+          className={`date-popover ${position.placement}${closing ? ' is-closing' : ''}`}
           role="dialog"
           aria-label="选择日期"
           style={{
@@ -161,25 +207,27 @@ export function DatePicker({ value, max, onChange }: DatePickerProps) {
             {weekdays.map((weekday) => <span key={weekday}>{weekday}</span>)}
           </div>
 
-          <div className="date-grid" ref={gridRef}>
-            {cells.map((dateValue, index) => {
-              if (!dateValue) return <span className="date-day-empty" key={`empty-${index}`} aria-hidden="true" />;
-              const selected = dateValue === value;
-              const isToday = dateValue === max;
-              return (
-                <button
-                  key={dateValue}
-                  type="button"
-                  aria-pressed={selected}
-                  aria-label={`${dateValue}，星期${weekdays[(new Date(`${dateValue}T00:00:00Z`).getUTCDay() + 6) % 7]}${isToday ? '，今天' : ''}`}
-                  className={`date-day ${selected ? 'selected' : ''} ${isToday ? 'today' : ''}`}
-                  disabled={dateValue > max}
-                  onClick={() => select(dateValue)}
-                >
-                  {Number(dateValue.slice(8))}
-                </button>
-              );
-            })}
+          <div className={`date-grid-page${page.key ? ` ${page.dir}` : ''}`} key={page.key}>
+            <div className="date-grid" ref={gridRef}>
+              {cells.map((dateValue, index) => {
+                if (!dateValue) return <span className="date-day-empty" key={`empty-${index}`} aria-hidden="true" />;
+                const selected = dateValue === value;
+                const isToday = dateValue === max;
+                return (
+                  <button
+                    key={dateValue}
+                    type="button"
+                    aria-pressed={selected}
+                    aria-label={`${dateValue}，星期${weekdays[(new Date(`${dateValue}T00:00:00Z`).getUTCDay() + 6) % 7]}${isToday ? '，今天' : ''}`}
+                    className={`date-day ${selected ? 'selected' : ''} ${isToday ? 'today' : ''}`}
+                    disabled={dateValue > max}
+                    onClick={() => select(dateValue)}
+                  >
+                    {Number(dateValue.slice(8))}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           <div className="date-popover-foot">
