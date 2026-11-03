@@ -1,9 +1,9 @@
 import { env } from 'cloudflare:workers';
-import { chinaToday, expenseCategories, incomeCategories, ownerKeys, validateEntry, type OwnerKey } from '@/lib/ledger';
+import { chinaStamp, chinaTime, chinaToday, expenseCategories, incomeCategories, ownerKeys, validateEntry, type OwnerKey } from '@/lib/ledger';
 export const dynamic='force-dynamic';
 // This is one shared ledger. Sites' private access boundary authorizes all admitted visitors.
 
-type EntryRow={id:string;type:string;amount:number;owner:string;date:string;note:string;category?:string;revision:number;created_at:string};
+type EntryRow={id:string;type:string;amount:number;owner:string;date:string;time?:string;note:string;category?:string;revision:number;created_at:string};
 type AvatarRow={owner:string;data:string};
 type CategoryRow={type:string;name:string;position:number};
 type OwnerRow={key:string;name:string;position:number};
@@ -86,7 +86,9 @@ async function read(){
  return {
   entries:(rows.results as EntryRow[]).map((r)=>{
    const ownerKey=resolveOwnerKey(r.owner,ownerList);
-   return {...r,owner:ownerNameByKey.get(ownerKey)??r.owner,ownerKey,category:r.category||'其他',createdAt:r.created_at};
+   // 没有 time 的旧库/旧记录：用写入时刻回填北京时间，界面不会因为缺列而报错。
+   const stamp=r.time?null:chinaStamp(r.created_at);
+   return {...r,owner:ownerNameByKey.get(ownerKey)??r.owner,ownerKey,category:r.category||'其他',time:r.time||stamp?.time||'',createdAt:r.created_at};
   }),
   today:chinaToday(),
   avatars,
@@ -114,10 +116,12 @@ export async function POST(request:Request){
    const id=b.entry.id;const revision=b.entry.revision;
    if(id){
     if(typeof id!=='string'||!Number.isInteger(revision))return reply({error:'记录无效'},400);
-    const r=await database.prepare('UPDATE entries SET type=?,amount=?,owner=?,date=?,note=?,category=?,revision=revision+1 WHERE id=? AND revision=?').bind(v.type,v.amount,v.ownerKey,v.date,v.note,v.category,id,revision).run();
+    // 编辑时不带 time 表示保留原时间，避免改备注把发生时刻冲掉。
+    const keepTime=typeof b.entry?.time!=='string';
+    const r=await database.prepare('UPDATE entries SET type=?,amount=?,owner=?,date=?,time=CASE WHEN ? THEN time ELSE ? END,note=?,category=?,revision=revision+1 WHERE id=? AND revision=?').bind(v.type,v.amount,v.ownerKey,v.date,keepTime?1:0,v.time,v.note,v.category,id,revision).run();
     if(!r.meta.changes)return reply({error:'记录已被更新或删除，请刷新后重试'},409);
    }else{
-    await database.prepare('INSERT INTO entries (id,type,amount,owner,date,note,category,revision,created_at) VALUES (?,?,?,?,?,?,?,1,?)').bind(crypto.randomUUID(),v.type,v.amount,v.ownerKey,v.date,v.note,v.category,new Date().toISOString()).run();
+    await database.prepare('INSERT INTO entries (id,type,amount,owner,date,time,note,category,revision,created_at) VALUES (?,?,?,?,?,?,?,?,1,?)').bind(crypto.randomUUID(),v.type,v.amount,v.ownerKey,v.date,v.time||chinaTime(),v.note,v.category,new Date().toISOString()).run();
    }
   }else if(b.action==='delete'){
    if(typeof b.id!=='string'||!Number.isInteger(b.revision))return reply({error:'记录无效'},400);

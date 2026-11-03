@@ -2,7 +2,10 @@ import { integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core'
 export const entries = sqliteTable('entries', {
  id: text('id').primaryKey(), type: text('type').notNull(), amount: integer('amount').notNull(),
  // 数据库列名沿用 owner，但存储稳定的归属 key（qing/hua/together），显示名从 owners 解析。
- ownerKey: text('owner').notNull(), date: text('date').notNull(), note: text('note').notNull().default(''), category: text('category').notNull().default('其他'),
+ ownerKey: text('owner').notNull(), date: text('date').notNull(),
+ // 发生时刻（北京时间 HH:mm），历史记录为空串表示只记了日期。
+ time: text('time').notNull().default(''),
+ note: text('note').notNull().default(''), category: text('category').notNull().default('其他'),
  revision: integer('revision').notNull().default(1), createdAt: text('created_at').notNull(),
 });
 export const owners = sqliteTable('owners', {
