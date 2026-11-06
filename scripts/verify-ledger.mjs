@@ -57,4 +57,127 @@ assert.throws(()=>validateEntry({...entries[0],ownerKey:''},'2026-10-31'));
 assert.throws(()=>validateEntry({...entries[0],ownerKey:'other'},'2026-10-31'));
 assert.throws(()=>validateEntry({...entries[0],amount:1.5},'2026-10-31'));
 assert.equal(validateEntry({...entries[0],date:'2024-02-29'},'2026-10-31').date,'2024-02-29');
+// ---- 登录：密码派生、会话令牌、Cookie（与账本逻辑同一套断言脚本） ----
+const authSource = await readFile(new URL('../lib/auth.ts', import.meta.url), 'utf8');
+const authJs = ts.transpileModule(authSource, {compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const auth = await import('data:text/javascript;base64,' + Buffer.from(authJs).toString('base64'));
+
+assert.deepEqual([...auth.hexToBytes('00ff0a')], [0, 255, 10]);
+assert.equal(auth.bytesToHex(auth.hexToBytes('deadbeef')), 'deadbeef');
+assert.throws(() => auth.hexToBytes('abc'));
+assert.equal(auth.randomHex(8).length, 16);
+
+// 迭代次数用低值加速测试，真实登录仍用默认 100000。
+const record = await auth.createPasswordRecord('secret123', 1000);
+assert.equal(record.iterations, 1000);
+assert.equal(record.salt.length, 32);
+assert.equal(record.hash.length, 64);
+assert.equal(await auth.verifyPassword('secret123', record), true);
+assert.equal(await auth.verifyPassword('secret124', record), false);
+assert.equal(await auth.verifyPassword('', record), false);
+// 同一密码两次派生应得到不同哈希（盐随机）。
+const other = await auth.createPasswordRecord('secret123', 1000);
+assert.notEqual(other.hash, record.hash);
+assert.notEqual(other.salt, record.salt);
+
+assert.equal(auth.passwordProblem('12345'), '密码至少 6 位');
+assert.equal(auth.passwordProblem('123456'), null);
+assert.equal(auth.passwordProblem('x'.repeat(65)), '密码最多 64 位');
+assert.equal(auth.passwordProblem(123456), '请输入密码');
+assert.equal(auth.passwordProblem(''), '请输入密码');
+
+const now = new Date('2026-11-06T00:00:00Z');
+const expiry = auth.sessionExpiry(now);
+assert.equal(expiry, '2027-05-05T00:00:00.000Z');
+assert.equal(auth.isSessionExpired(expiry, now), false);
+assert.equal(auth.isSessionExpired(expiry, new Date('2027-05-05T00:00:00Z')), true);
+assert.equal(auth.isSessionExpired('not-a-date', now), true);
+// 刚登录时不需要续期；剩余 149 天时开始续期。
+assert.equal(auth.sessionNeedsRenewal(expiry, now), false);
+assert.equal(auth.sessionNeedsRenewal(expiry, new Date('2026-12-07T00:00:01Z')), true);
+// 续期必须同时重发 Cookie：浏览器按自己那份 Max-Age 丢弃，只续数据库是没用的。
+assert.equal(auth.renewalCookie(expiry, 'tok', true, now), null);
+const renewedCookie = auth.renewalCookie(expiry, 'tok', true, new Date('2026-12-07T00:00:01Z'));
+assert.match(renewedCookie, /^tl_session=tok/);
+assert.match(renewedCookie, /Max-Age=15552000/);
+assert.match(renewedCookie, /Secure/);
+assert.doesNotMatch(auth.renewalCookie(expiry, 'tok', false, new Date('2026-12-07T00:00:01Z')), /Secure/);
+
+const cookie = auth.sessionCookie('abc123', {secure: true});
+assert.match(cookie, /^tl_session=abc123/);
+assert.match(cookie, /HttpOnly/);
+assert.match(cookie, /SameSite=Lax/);
+assert.match(cookie, /Max-Age=15552000/); // 180 天
+assert.match(cookie, /Secure/);
+assert.doesNotMatch(auth.sessionCookie('abc123', {secure: false}), /Secure/);
+assert.match(auth.clearSessionCookie(true), /Max-Age=0/);
+assert.equal(auth.readCookie('a=1; tl_session=xyz; b=2', 'tl_session'), 'xyz');
+assert.equal(auth.readCookie('a=1', 'tl_session'), null);
+assert.equal(auth.readCookie(null, 'tl_session'), null);
+
+assert.equal(auth.normalizeInviteCode(' ab-12 cd '), 'AB12CD');
+assert.equal(auth.normalizeInviteCode(undefined), '');
+const invite = auth.createInviteCode();
+assert.equal(invite.length, 6);
+assert.match(invite, /^[2-9A-HJ-NP-Z]{6}$/);
+assert.equal(await auth.sha256Hex('abc'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+assert.equal(auth.isSecureRequest(new Request('https://example.com/api/auth')), true);
+assert.equal(auth.isSecureRequest(new Request('http://127.0.0.1:3000/api/auth')), false);
+
+// ---- 图片与评论：魔数、正文、id、错误码、对象 key（纯函数） ----
+const mediaSource = await readFile(new URL('../lib/media.ts', import.meta.url), 'utf8');
+const mediaJs = ts.transpileModule(mediaSource, {compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText;
+const media = await import('data:text/javascript;base64,' + Buffer.from(mediaJs).toString('base64'));
+
+const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+const webp = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50]);
+assert.equal(media.sniffImageMime(jpeg), 'image/jpeg');
+assert.equal(media.sniffImageMime(png), 'image/png');
+assert.equal(media.sniffImageMime(webp), 'image/webp');
+assert.equal(media.sniffImageMime(new Uint8Array([0x47, 0x49, 0x46, 0x38])), null);
+assert.equal(media.sniffImageMime(new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"></svg>')), null);
+assert.equal(media.sniffImageMime(new Uint8Array()), null);
+assert.equal(media.sniffImageMime(new Uint8Array([0xff, 0xd8])), null);
+assert.equal(media.isThumbJpeg(jpeg), true);
+assert.equal(media.isThumbJpeg(png), false);
+
+assert.equal(media.isValidId('123e4567-e89b-42d3-a456-426614174000'), true);
+assert.equal(media.isValidId('0123456789abcdef0123456789abcdef'), true);
+assert.equal(media.isValidId(''), false);
+assert.equal(media.isValidId('a'.repeat(65)), false);
+assert.equal(media.isValidId('../etc/passwd'), false);
+assert.equal(media.isValidId('abc$def'), false);
+assert.equal(media.isValidId(42), false);
+
+assert.equal(media.normalizeCommentBody(' 你好 '), '你好');
+assert.equal(media.normalizeCommentBody('a'.repeat(300)), 'a'.repeat(300));
+assert.equal([...media.normalizeCommentBody('😀'.repeat(300))].length, 300);
+assert.throws(() => media.normalizeCommentBody(''), (error) => error instanceof media.MediaError && error.code === 'COMMENT_INVALID');
+assert.throws(() => media.normalizeCommentBody('   '), (error) => error.code === 'COMMENT_INVALID');
+assert.throws(() => media.normalizeCommentBody('a'.repeat(301)), (error) => error.code === 'COMMENT_INVALID');
+assert.throws(() => media.normalizeCommentBody('😀'.repeat(301)), (error) => error.code === 'COMMENT_INVALID');
+assert.throws(() => media.normalizeCommentBody(42), (error) => error.code === 'COMMENT_INVALID');
+
+const statuses = {
+ IMAGE_LIMIT:400, IMAGE_INVALID:400, IMAGE_TOO_LARGE:413, IMAGE_UNSUPPORTED:415, IMAGE_CONFLICT:409,
+ TARGET_NOT_FOUND:404, ENTRY_NOT_FOUND:404, REVISION_CONFLICT:409, ENTRY_CONFLICT:409,
+ COMMENT_INVALID:400, MEDIA_UNAVAILABLE:503,
+};
+for (const [code, status] of Object.entries(statuses)) assert.equal(media.mediaErrorStatus(code), status, code);
+const conflict = media.mediaError('IMAGE_CONFLICT', '重复');
+assert.equal(conflict.code, 'IMAGE_CONFLICT');
+assert.equal(conflict.status, 409);
+assert.equal(conflict.message, '重复');
+assert.equal(media.mediaObjectKey('abc', 'full'), 'media/abc/original');
+assert.equal(media.mediaObjectKey('abc', 'thumb'), 'media/abc/thumb');
+assert.equal(media.MAX_ENTRY_IMAGES, 9);
+assert.equal(media.MAX_COMMENT_IMAGES, 3);
+assert.equal(media.MAX_COMMENT_LENGTH, 300);
+assert.deepEqual(media.MIME_TYPES, ['image/jpeg', 'image/png', 'image/webp']);
+assert.deepEqual(media.IMAGE_LIMITS.r2, {maxBytes:2000000, maxThumbBytes:300000});
+assert.deepEqual(media.IMAGE_LIMITS.d1, {maxBytes:700000, maxThumbBytes:120000});
+
 console.log('PASS: 金额精度、北京时间跨月、累计余额、归属去重、编辑删除重算、期初存款隔离、按天汇总/组合筛选/排序、收支分类校验/筛选、整数分精度、非法输入验证');
+console.log('PASS: 登录密码派生/校验、会话过期与滑动续期、长期 Cookie 属性、邀请码生成与规范化、Cookie 解析、HTTPS 判定');
+console.log('PASS: 图片魔数识别、缩略图 JPEG 校验、评论正文码点长度、媒体 id 白名单、错误码状态映射、对象 key');

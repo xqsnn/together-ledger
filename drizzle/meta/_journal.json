@@ -29,6 +29,20 @@
       "when": 1793453487531,
       "tag": "0003_yummy_corsair",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1793953488892,
+      "tag": "0006_media_comments",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1793956493524,
+      "tag": "0007_ordinary_bloodstrike",
+      "breakpoints": true
     }
   ]
 }

@@ -1,12 +1,27 @@
 import { env } from 'cloudflare:workers';
 import { chinaToday, expenseCategories, incomeCategories, ownerKeys, validateEntry, type OwnerKey } from '@/lib/ledger';
+import {
+  IMAGE_LIMITS,
+  MAX_COMMENT_IMAGES,
+  MAX_ENTRY_IMAGES,
+  MediaError,
+  isValidId,
+  normalizeCommentBody,
+  type CommentRecord,
+  type MediaLimits,
+  type MediaMeta,
+} from '@/lib/media';
+import { drainDeletionsThrottled, storageMode } from '@/lib/media-store';
+import { readSession } from '@/lib/auth-server';
 export const dynamic='force-dynamic';
-// This is one shared ledger. Sites' private access boundary authorizes all admitted visitors.
+// 一本共享账本：所有登录成员看到同一份数据，登录只用来区分「谁在记账」。
 
-type EntryRow={id:string;type:string;amount:number;owner:string;date:string;note:string;category?:string;revision:number;created_at:string};
+type EntryRow={id:string;type:string;amount:number;owner:string;created_by?:string|null;date:string;note:string;category?:string;revision:number;created_at:string};
 type AvatarRow={owner:string;data:string};
 type CategoryRow={type:string;name:string;position:number};
 type OwnerRow={key:string;name:string;position:number};
+type CommentRow={id:string;entry_id:string;parent_id:string|null;reply_to_owner:string|null;body:string;created_by:string;created_at:string};
+type MediaRow={id:string;entry_id:string|null;comment_id:string|null;width:number;height:number;bytes:number;thumb_bytes:number;created_at:string};
 
 const DEFAULT_OWNERS:{key:OwnerKey;name:string}[]=[
  {key:'qing',name:'青'},
@@ -25,7 +40,12 @@ function resolveOwnerKey(value:string, ownerList:{key:OwnerKey;name:string}[]):O
 }
 
 function db(){if(!env.DB)throw new Error('账本暂时无法连接，请稍后重试');return env.DB;}
-function reply(data:unknown,status=200){return Response.json(data,{status,headers:{'Cache-Control':'no-store'}});}
+function reply(data:unknown,status=200,cookie?:string|null){
+ const headers:Record<string,string>={'Cache-Control':'no-store'};
+ if(cookie)headers['Set-Cookie']=cookie;
+ return Response.json(data,{status,headers});
+}
+function fail(code:string,message:string,status:number){return reply({error:message,code},status);}
 
 async function ensureCategories(database:D1Database){
  const row=await database.prepare('SELECT COUNT(*) AS count FROM categories').first<{count:number}>();
@@ -70,7 +90,12 @@ async function readOwners(database:D1Database):Promise<{key:OwnerKey;name:string
  }
 }
 
-async function read(){
+function mediaLimits():MediaLimits{
+ const mode=storageMode();
+ return {...IMAGE_LIMITS[mode],mode,maxPerEntry:MAX_ENTRY_IMAGES,maxPerComment:MAX_COMMENT_IMAGES};
+}
+
+async function read(viewer:OwnerKey){
  const database=db();
  const [rows,categories,ownerList]=await Promise.all([
   database.prepare('SELECT * FROM entries ORDER BY date DESC, created_at DESC, id DESC').all(),
@@ -82,12 +107,51 @@ async function read(){
   const avatarRows=await database.prepare('SELECT owner, data FROM avatars').all();
   (avatarRows.results as AvatarRow[]).forEach((a)=>{if(a.owner&&a.data)avatars[resolveOwnerKey(a.owner,ownerList)]=a.data;});
  }catch{}
+ // 迁移尚未执行时不让整本账失败：图片/评论退化为空。
+ let commentRows:CommentRow[]=[];
+ let mediaRows:MediaRow[]=[];
+ let likeRows:{comment_id:string;owner_key:string}[]=[];
+ try{
+  const [comments,media,likes]=await Promise.all([
+   database.prepare('SELECT id, entry_id, parent_id, reply_to_owner, body, created_by, created_at FROM comments ORDER BY created_at, id').all<CommentRow>(),
+   database.prepare('SELECT id, entry_id, comment_id, width, height, bytes, thumb_bytes, created_at FROM media ORDER BY created_at, id').all<MediaRow>(),
+   database.prepare('SELECT comment_id, owner_key FROM comment_likes').all<{comment_id:string;owner_key:string}>().catch(()=>({results:[] as {comment_id:string;owner_key:string}[]})),
+  ]);
+  commentRows=comments.results;mediaRows=media.results;likeRows=likes.results;
+ }catch{}
+ const mediaByEntry=new Map<string,MediaMeta[]>();
+ const mediaByComment=new Map<string,MediaMeta[]>();
+ mediaRows.forEach((row)=>{
+  const meta:MediaMeta={id:row.id,width:Number(row.width),height:Number(row.height),bytes:Number(row.bytes),thumbBytes:Number(row.thumb_bytes)};
+  const grouped=row.entry_id?mediaByEntry:row.comment_id?mediaByComment:null;
+  const key=row.entry_id??row.comment_id;
+  if(!grouped||!key)return;
+  grouped.set(key,[...(grouped.get(key)??[]),meta]);
+ });
+ const likesByComment=new Map<string,{count:number;mine:boolean}>();
+ likeRows.forEach((like)=>{
+  const current=likesByComment.get(like.comment_id)??{count:0,mine:false};
+  current.count+=1;
+  if(like.owner_key===viewer)current.mine=true;
+  likesByComment.set(like.comment_id,current);
+ });
+ const comments:CommentRecord[]=commentRows.map((row)=>({
+  id:row.id,entryId:row.entry_id,parentId:row.parent_id,replyToOwner:row.reply_to_owner?resolveOwnerKey(row.reply_to_owner,ownerList):null,
+  body:row.body,createdBy:resolveOwnerKey(row.created_by,ownerList),createdAt:row.created_at,
+  images:mediaByComment.get(row.id)??[],
+  likeCount:likesByComment.get(row.id)?.count??0,
+  likedByMe:likesByComment.get(row.id)?.mine??false,
+ }));
  const ownerNameByKey=new Map(ownerList.map((owner)=>[owner.key,owner.name]));
  return {
   entries:(rows.results as EntryRow[]).map((r)=>{
    const ownerKey=resolveOwnerKey(r.owner,ownerList);
-   return {...r,owner:ownerNameByKey.get(ownerKey)??r.owner,ownerKey,category:r.category||'其他',createdAt:r.created_at};
+   // 存量记录没有 created_by：归属是具体某人就当作本人记的，「共同」无法判断，留空。
+   const createdBy=r.created_by?resolveOwnerKey(r.created_by,ownerList):(ownerKey==='together'?null:ownerKey);
+   return {...r,owner:ownerNameByKey.get(ownerKey)??r.owner,ownerKey,createdBy,category:r.category||'其他',createdAt:r.created_at,images:mediaByEntry.get(r.id)??[]};
   }),
+  comments,
+  mediaLimits:mediaLimits(),
   today:chinaToday(),
   avatars,
   categories,
@@ -95,13 +159,41 @@ async function read(){
  };
 }
 
-export async function GET(){
- try{return reply(await read());}
- catch(e){console.error(e);return reply({error:'账本暂时无法连接，请重试'},503);}
+/**
+ * 删除 media 行时按行内 storage 收尾：D1 字节同批删除，R2 对象进重试队列。
+ * 每条都带 `NOT EXISTS media` 守卫：只有 media 行确实已经删掉才动对象，
+ * 避免「条目 revision 冲突、没删成」却把图片字节/对象清掉。
+ */
+function mediaCleanupStatements(database:D1Database, rows:{id:string;storage:string}[]){
+ const statements:D1PreparedStatement[]=[];
+ const now=new Date().toISOString();
+ for(const row of rows){
+  for(const variant of ['full','thumb'] as const){
+   if(row.storage==='d1'){
+    statements.push(database.prepare('DELETE FROM media_blobs WHERE media_id=? AND variant=? AND NOT EXISTS (SELECT 1 FROM media WHERE id=?)').bind(row.id,variant,row.id));
+   }else{
+    statements.push(database.prepare('INSERT OR IGNORE INTO media_deletions (media_id,variant,storage,created_at,attempts,next_attempt_at) SELECT ?,?,?,?,0,? WHERE NOT EXISTS (SELECT 1 FROM media WHERE id=?)').bind(row.id,variant,row.storage,now,now,row.id));
+   }
+  }
+ }
+ return statements;
+}
+
+export async function GET(request:Request){
+ const session=await readSession(request);
+ if(!session)return fail('UNAUTHORIZED','请先登录',401);
+ try{
+  const result=await read(session.ownerKey);
+  try{await drainDeletionsThrottled(db());}catch{}
+  return reply(result,200,session.cookie);
+ }
+ catch(e){console.error(e);return fail('SERVER_ERROR','账本暂时无法连接，请重试',503);}
 }
 
 export async function POST(request:Request){
- if(!request.headers.get('content-type')?.includes('application/json'))return reply({error:'请求格式无效'},415);
+ if(!request.headers.get('content-type')?.includes('application/json'))return fail('REQUEST_INVALID','请求格式无效',415);
+ const session=await readSession(request);
+ if(!session)return fail('UNAUTHORIZED','请先登录',401);
  try{
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const b=await request.json() as any;
@@ -111,18 +203,77 @@ export async function POST(request:Request){
    const [categories,ownerList]=await Promise.all([readCategories(database),readOwners(database)]);
    const type=b.entry?.type==='income'?'income':'expense';
    const v=validateEntry(b.entry,chinaToday(),{categories:categories[type],ownerKeys:ownerList.map((owner)=>owner.key)});
-   const id=b.entry.id;const revision=b.entry.revision;
-   if(id){
-    if(typeof id!=='string'||!Number.isInteger(revision))return reply({error:'记录无效'},400);
-    const r=await database.prepare('UPDATE entries SET type=?,amount=?,owner=?,date=?,note=?,category=?,revision=revision+1 WHERE id=? AND revision=?').bind(v.type,v.amount,v.ownerKey,v.date,v.note,v.category,id,revision).run();
-    if(!r.meta.changes)return reply({error:'记录已被更新或删除，请刷新后重试'},409);
+   const id=b.entry?.id;
+   const revision=b.entry?.revision;
+   const mode=b.mode;
+   if(mode!==undefined&&mode!=='create'&&mode!=='update')return fail('ENTRY_INVALID','记录无效',400);
+   if(mode==='create'||(!mode&&!id)){
+    const entryId=mode==='create'?id:(id??crypto.randomUUID());
+    if(!isValidId(entryId))return fail('ENTRY_INVALID','记录无效',400);
+    const readExisting=()=>database.prepare('SELECT id, revision, type, amount, owner, date, note, category FROM entries WHERE id=?').bind(entryId).first<{id:string;revision:number;type:string;amount:number;owner:string;date:string;note:string;category:string|null}>();
+    const same=(row:{type:string;amount:number;owner:string;date:string;note:string;category:string|null}|null)=>Boolean(row)&&row!.type===v.type&&Number(row!.amount)===v.amount&&row!.owner===v.ownerKey&&row!.date===v.date&&row!.note===v.note&&(row!.category||'其他')===v.category;
+    // 幂等新建：同一个客户端 id 重试只会落一条；并发撞 id 时用 OR IGNORE 兜住主键。
+    const inserted=await database.prepare('INSERT OR IGNORE INTO entries (id,type,amount,owner,created_by,date,note,category,revision,created_at) VALUES (?,?,?,?,?,?,?,?,1,?)').bind(entryId,v.type,v.amount,v.ownerKey,session.ownerKey,v.date,v.note,v.category,new Date().toISOString()).run();
+    if(!inserted.meta.changes&&!same(await readExisting()))return fail('ENTRY_CONFLICT','记录已存在且内容不同，请刷新后重试',409);
    }else{
-    await database.prepare('INSERT INTO entries (id,type,amount,owner,date,note,category,revision,created_at) VALUES (?,?,?,?,?,?,?,1,?)').bind(crypto.randomUUID(),v.type,v.amount,v.ownerKey,v.date,v.note,v.category,new Date().toISOString()).run();
+    if(!isValidId(id)||!Number.isInteger(revision))return fail('ENTRY_INVALID','记录无效',400);
+    const r=await database.prepare('UPDATE entries SET type=?,amount=?,owner=?,date=?,note=?,category=?,revision=revision+1 WHERE id=? AND revision=?').bind(v.type,v.amount,v.ownerKey,v.date,v.note,v.category,id,revision).run();
+    if(!r.meta.changes)return fail('REVISION_CONFLICT','记录已被更新或删除，请刷新后重试',409);
    }
+  }else if(b.action==='comment-add'){
+   const comment=b.comment;
+   if(!comment||!isValidId(comment.id)||!isValidId(comment.entryId))return fail('COMMENT_INVALID','评论内容无效',400);
+   const body=normalizeCommentBody(comment.body);
+   const entry=await database.prepare('SELECT 1 AS found FROM entries WHERE id=?').bind(comment.entryId).first<{found:number}>();
+   if(!entry)return fail('ENTRY_NOT_FOUND','记录不存在或已删除',404);
+   // 只允许两级：回复统一挂到根评论上，并记住被回复的人。
+   let parentId:string|null=null;
+   let replyToOwner:string|null=null;
+   if(comment.parentId!==undefined&&comment.parentId!==null){
+    if(!isValidId(comment.parentId))return fail('COMMENT_INVALID','回复的评论无效',400);
+    const parent=await database.prepare('SELECT id, entry_id, parent_id, created_by FROM comments WHERE id=?').bind(comment.parentId).first<{id:string;entry_id:string;parent_id:string|null;created_by:string}>();
+    if(!parent||parent.entry_id!==comment.entryId)return fail('COMMENT_NOT_FOUND','回复的评论不存在或已删除',404);
+    parentId=parent.parent_id??parent.id;
+    replyToOwner=parent.created_by;
+   }
+   await database.prepare('INSERT INTO comments (id,entry_id,parent_id,reply_to_owner,body,created_by,created_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING').bind(comment.id,comment.entryId,parentId,replyToOwner,body,session.ownerKey,new Date().toISOString()).run();
+  }else if(b.action==='comment-like'){
+   if(!isValidId(b.id))return fail('COMMENT_INVALID','评论无效',400);
+   const comment=await database.prepare('SELECT id FROM comments WHERE id=?').bind(b.id).first<{id:string}>();
+   if(!comment)return fail('COMMENT_NOT_FOUND','评论不存在或已删除',404);
+   const liked=await database.prepare('SELECT 1 AS found FROM comment_likes WHERE comment_id=? AND owner_key=?').bind(b.id,session.ownerKey).first<{found:number}>();
+   if(liked){
+    await database.prepare('DELETE FROM comment_likes WHERE comment_id=? AND owner_key=?').bind(b.id,session.ownerKey).run();
+   }else{
+    await database.prepare('INSERT OR IGNORE INTO comment_likes (comment_id,owner_key,created_at) VALUES (?,?,?)').bind(b.id,session.ownerKey,new Date().toISOString()).run();
+   }
+  }else if(b.action==='comment-delete'){
+   if(!isValidId(b.id))return fail('COMMENT_INVALID','评论无效',400);
+   // 删评论会带走它的回复、点赞和图片；对象清单要在删行之前读出来。
+   const rows=await database.prepare('SELECT id, storage FROM media WHERE comment_id=? OR comment_id IN (SELECT id FROM comments WHERE parent_id=?)').bind(b.id,b.id).all<{id:string;storage:string}>();
+   const statements:D1PreparedStatement[]=[
+    database.prepare('DELETE FROM media WHERE comment_id=? OR comment_id IN (SELECT id FROM comments WHERE parent_id=?)').bind(b.id,b.id),
+    database.prepare('DELETE FROM comments WHERE id=?').bind(b.id),
+    ...mediaCleanupStatements(database,rows.results),
+   ];
+   await database.batch(statements);
   }else if(b.action==='delete'){
-   if(typeof b.id!=='string'||!Number.isInteger(b.revision))return reply({error:'记录无效'},400);
-   const r=await database.prepare('DELETE FROM entries WHERE id=? AND revision=?').bind(b.id,b.revision).run();
-   if(!r.meta.changes)return reply({error:'记录已被更新或删除，请刷新后重试'},409);
+   if(!isValidId(b.id)||!Number.isInteger(b.revision))return fail('ENTRY_INVALID','记录无效',400);
+   const current=await database.prepare('SELECT revision FROM entries WHERE id=?').bind(b.id).first<{revision:number}>();
+   if(!current||Number(current.revision)!==b.revision)return fail('REVISION_CONFLICT','记录已被更新或删除，请刷新后重试',409);
+   const media=await database.prepare('SELECT m.id, m.storage FROM media m LEFT JOIN comments c ON m.comment_id=c.id WHERE m.entry_id=? OR c.entry_id=?').bind(b.id,b.id).all<{id:string;storage:string}>();
+   // 单条记录删除 = 一次 batch：删条目（级联评论/media）+ 兜底显式删 media + 对象收尾。
+   // media 删除与对象收尾都以「条目已不存在」/「media 行已不存在」为守卫，
+   // revision 在这中间被改掉时整批都不会动图片。
+   const statements:D1PreparedStatement[]=[
+    database.prepare('DELETE FROM entries WHERE id=? AND revision=?').bind(b.id,b.revision),
+    database.prepare('DELETE FROM media WHERE entry_id=? AND NOT EXISTS (SELECT 1 FROM entries WHERE id=?)').bind(b.id,b.id),
+    database.prepare('DELETE FROM media WHERE comment_id IN (SELECT id FROM comments WHERE entry_id=?) AND NOT EXISTS (SELECT 1 FROM entries WHERE id=?)').bind(b.id,b.id),
+    ...mediaCleanupStatements(database,media.results),
+   ];
+   const results=await database.batch(statements);
+   const deleted=results[0]?.meta?.changes??0;
+   if(!deleted)return fail('REVISION_CONFLICT','记录已被更新或删除，请刷新后重试',409);
   }else if(b.action==='avatar'){
    const ownerList=await readOwners(database);
    const matched=typeof b.ownerKey==='string'
@@ -130,29 +281,29 @@ export async function POST(request:Request){
     : typeof b.owner==='string'
      ? ownerList.find((owner)=>owner.name===b.owner)
      : undefined;
-   if(!matched||typeof b.data!=='string')return reply({error:'头像无效'},400);
+   if(!matched||typeof b.data!=='string')return fail('AVATAR_INVALID','头像无效',400);
    if(b.data===''){
     await database.prepare('DELETE FROM avatars WHERE owner=?').bind(matched.key).run();
    }else{
-    if(!b.data.startsWith('data:image/')||b.data.length>300000)return reply({error:'头像过大或格式不支持'},400);
+    if(!b.data.startsWith('data:image/')||b.data.length>300000)return fail('AVATAR_INVALID','头像过大或格式不支持',400);
     await database.prepare('INSERT INTO avatars (owner,data,updated_at) VALUES (?,?,?) ON CONFLICT(owner) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at').bind(matched.key,b.data,new Date().toISOString()).run();
    }
   }else if(b.action==='category'){
    const type=b.type==='income'?'income':b.type==='expense'?'expense':null;
-   if(!type||typeof b.name!=='string')return reply({error:'分类无效'},400);
+   if(!type||typeof b.name!=='string')return fail('CATEGORY_INVALID','分类无效',400);
    const name=b.name.trim();
-   if(!name||name.length>12||name==='全部')return reply({error:'分类名称需为 1-12 个字，且不能为「全部」'},400);
+   if(!name||name.length>12||name==='全部')return fail('CATEGORY_INVALID','分类名称需为 1-12 个字，且不能为「全部」',400);
    const categories=await readCategories(database);
    const list=categories[type];
    if(b.op==='add'){
-    if(list.includes(name))return reply({error:'该分类已存在'},409);
-    if(list.length>=30)return reply({error:'分类数量已达上限'},400);
+    if(list.includes(name))return fail('CATEGORY_CONFLICT','该分类已存在',409);
+    if(list.length>=30)return fail('CATEGORY_INVALID','分类数量已达上限',400);
     await database.prepare('INSERT INTO categories (type,name,position) VALUES (?,?,?)').bind(type,name,list.length+1).run();
    }else if(b.op==='rename'){
-    if(!list.includes(name))return reply({error:'分类不存在'},404);
+    if(!list.includes(name))return fail('CATEGORY_NOT_FOUND','分类不存在',404);
     const newName=typeof b.newName==='string'?b.newName.trim():'';
-    if(!newName||newName.length>12||newName==='全部')return reply({error:'分类名称需为 1-12 个字，且不能为「全部」'},400);
-    if(newName!==name&&list.includes(newName))return reply({error:'该分类已存在'},409);
+    if(!newName||newName.length>12||newName==='全部')return fail('CATEGORY_INVALID','分类名称需为 1-12 个字，且不能为「全部」',400);
+    if(newName!==name&&list.includes(newName))return fail('CATEGORY_CONFLICT','该分类已存在',409);
     if(newName!==name){
      await database.batch([
       database.prepare('UPDATE entries SET category=?, revision=revision+1 WHERE type=? AND category=?').bind(newName,type,name),
@@ -160,23 +311,23 @@ export async function POST(request:Request){
      ]);
     }
    }else if(b.op==='delete'){
-    if(!list.includes(name))return reply({error:'分类不存在'},404);
-    if(list.length<=1)return reply({error:'至少保留一个分类'},400);
+    if(!list.includes(name))return fail('CATEGORY_NOT_FOUND','分类不存在',404);
+    if(list.length<=1)return fail('CATEGORY_INVALID','至少保留一个分类',400);
     const remaining=list.filter((item)=>item!==name);
     const fallback=remaining.includes('其他')?'其他':remaining[0];
     await database.batch([
      database.prepare('UPDATE entries SET category=?, revision=revision+1 WHERE type=? AND category=?').bind(fallback,type,name),
      database.prepare('DELETE FROM categories WHERE type=? AND name=?').bind(type,name),
     ]);
-   }else return reply({error:'不支持的操作'},400);
+   }else return fail('UNSUPPORTED','不支持的操作',400);
   }else if(b.action==='owner'){
-   if(!ownerKeys.includes(b.key)||typeof b.name!=='string')return reply({error:'归属无效'},400);
+   if(!ownerKeys.includes(b.key)||typeof b.name!=='string')return fail('OWNER_INVALID','归属无效',400);
    const ownerList=await readOwners(database);
    const current=ownerList.find((owner)=>owner.key===b.key);
-   if(!current)return reply({error:'归属不存在'},404);
+   if(!current)return fail('OWNER_NOT_FOUND','归属不存在',404);
    const name=b.name.trim();
-   if(!name||name.length>8||name==='全部')return reply({error:'名字需为 1-8 个字，且不能为「全部」'},400);
-   if(ownerList.some((owner)=>owner.key!==b.key&&owner.name===name))return reply({error:'该名字已被使用'},409);
+   if(!name||name.length>8||name==='全部')return fail('OWNER_INVALID','名字需为 1-8 个字，且不能为「全部」',400);
+   if(ownerList.some((owner)=>owner.key!==b.key&&owner.name===name))return fail('OWNER_CONFLICT','该名字已被使用',409);
    if(name!==current.name){
     await database.batch([
      database.prepare('UPDATE owners SET name=? WHERE key=?').bind(name,b.key),
@@ -185,13 +336,16 @@ export async function POST(request:Request){
      database.prepare('UPDATE OR REPLACE avatars SET owner=? WHERE owner=?').bind(b.key,current.name),
     ]);
    }
-  }else return reply({error:'不支持的操作'},400);
+  }else return fail('UNSUPPORTED','不支持的操作',400);
 
-  return reply(await read());
+  const result=await read(session.ownerKey);
+  try{await drainDeletionsThrottled(database);}catch{}
+  return reply(result,200,session.cookie);
  }catch(e){
-  if(e instanceof SyntaxError)return reply({error:'请求格式无效'},400);
+  if(e instanceof MediaError)return fail(e.code,e.message,e.status);
+  if(e instanceof SyntaxError)return fail('REQUEST_INVALID','请求格式无效',400);
   const message=e instanceof Error?e.message:'保存失败，请重试';
   console.error(e);
-  return reply({error:message},400);
+  return fail('ENTRY_INVALID',message,400);
  }
 }

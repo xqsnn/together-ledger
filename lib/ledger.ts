@@ -1,7 +1,7 @@
 export type OwnerKey = 'qing' | 'hua' | 'together';
 export type Owner = string;
 export const ownerKeys:OwnerKey[] = ['qing','hua','together'];
-export type Entry = { id:string; type:'income'|'expense'; amount:number; owner:Owner; ownerKey:OwnerKey; date:string; note:string; category:string; revision:number; createdAt:string };
+export type Entry = { id:string; type:'income'|'expense'; amount:number; owner:Owner; ownerKey:OwnerKey; createdBy?:OwnerKey|null; date:string; note:string; category:string; revision:number; createdAt:string };
 export type LedgerFilter = { type?: Entry['type']|'all'; owner?: Owner|'全部'; ownerKey?: OwnerKey|'全部'; category?: string|'全部' };
 export type DailyTotal = { date:string; income:number; expense:number; surplus:number; count:number };
 export const owners:Owner[] = ['青','华','共同'];
