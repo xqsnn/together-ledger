@@ -34,8 +34,11 @@ import {
 } from 'lucide-react';
 import { MoneyBagIcon } from '@/components/money-bag-icon';
 import {
+  byWhenDesc,
+  chinaTime,
   dailyTotals,
   DailyTotal,
+  dayOwnerTotals,
   Entry,
   expenseCategories,
   incomeCategories,
@@ -48,6 +51,7 @@ import {
 } from '@/lib/ledger';
 import { MonthPicker } from '@/components/month-picker';
 import { DatePicker } from '@/components/date-picker';
+import { TimePicker } from '@/components/time-picker';
 import { Segmented } from '@/components/segmented';
 import { SlidingNav } from '@/components/sliding-nav';
 import Duo from '@/components/duo';
@@ -80,7 +84,7 @@ type MutationBody =
   | { action: 'delete'; id: string; revision: number }
   | { action: 'comment-add'; comment: { id: string; entryId: string; body: string } }
   | { action: 'comment-delete'; id: string }
-  | { action: 'save'; mode?: 'create' | 'update'; entry: Partial<Entry> & { type: Entry['type']; amount: number; ownerKey: OwnerKey; date: string; note: string; category: string } };
+  | { action: 'save'; mode?: 'create' | 'update'; entry: Partial<Entry> & { type: Entry['type']; amount: number; ownerKey: OwnerKey; date: string; time?: string; note: string; category: string } };
 
 const blank: Ledger = {
   entries: [],
@@ -91,6 +95,8 @@ const blank: Ledger = {
   categories: { expense: [...expenseCategories], income: [...incomeCategories] },
   owners: ownerKeys.map((key, index) => ({ key, name: owners[index] })),
 };
+// 手机竖屏断点：与样式里的 560px 保持一致，用于决定归属胶囊是否显示名字。
+const NARROW_QUERY = '(max-width: 560px)';
 const money = (n: number) =>
   (n / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const ownerClass = (key: string) => (key === 'qing' ? 'qing' : key === 'hua' ? 'hua' : 'together');
@@ -137,6 +143,7 @@ export default function Home() {
   const [amount, setAmount] = useState('');
   const [selectedOwner, setSelectedOwner] = useState<OwnerKey | null>(null);
   const [date, setDate] = useState(chinaToday());
+  const [entryTime, setEntryTime] = useState(chinaTime());
   const [note, setNote] = useState('');
   const [formError, setFormError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -153,6 +160,9 @@ export default function Home() {
   const [invite, setInvite] = useState<{ code: string; name: string } | null>(null);
   const [toast, setToast] = useState('');
   const [toastLeaving, setToastLeaving] = useState(false);
+  // 卡片宽度不足以并排显示三个归属方金额时收起明细（首次渲染先按视口估算，挂载后再精确测量）。
+  // 手机竖屏下收支卡片较窄，归属胶囊放不下名字和头像时只保留头像。
+  const [isNarrow, setIsNarrow] = useState(() => typeof window !== 'undefined' && window.matchMedia(NARROW_QUERY).matches);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const trendScrollRef = useRef<HTMLDivElement>(null);
   const selectedDayRef = useRef<HTMLElement>(null);
@@ -290,6 +300,14 @@ export default function Home() {
     if (modal) dialog.scrollTop = 0;
   }, [modal]);
 
+  // 跟随断点变化，决定归属胶囊是否保留名字（CSS 只做主尺寸，文字取舍交给渲染）。
+  useEffect(() => {
+    const query = window.matchMedia(NARROW_QUERY);
+    const onChange = () => setIsNarrow(query.matches);
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }, []);
+
 
   const data = ledger;
   const ownerNames = data.owners.map((item) => item.name);
@@ -330,7 +348,7 @@ export default function Home() {
         (type === 'all' || entry.type === type) &&
         (categoryFilter === '全部' || entry.category === categoryFilter),
     )
-    .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+    .sort(byWhenDesc);
   // 筛选只在明细视图生效，日历视图始终展示完整账目。
   const daily = dailyTotals(
     data.entries,
@@ -348,7 +366,7 @@ export default function Home() {
           (categoryFilter === '全部' || entry.category === categoryFilter)
         )),
     )
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    .sort(byWhenDesc);
   const selectedSummary = dailyMap.get(selectedDay) ?? {
     date: selectedDay,
     income: 0,
@@ -358,11 +376,14 @@ export default function Home() {
   };
   const todayEntries = data.entries
     .filter((entry) => entry.date === data.today)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    .sort(byWhenDesc);
+  const todayIncomeEntries = todayEntries.filter((entry) => entry.type === 'income');
+  const todayExpenseEntries = todayEntries.filter((entry) => entry.type === 'expense');
   const todaySummary = {
-    income: todayEntries.filter((entry) => entry.type === 'income').reduce((sum, entry) => sum + entry.amount, 0),
-    expense: todayEntries.filter((entry) => entry.type === 'expense').reduce((sum, entry) => sum + entry.amount, 0),
+    income: todayIncomeEntries.reduce((sum, entry) => sum + entry.amount, 0),
+    expense: todayExpenseEntries.reduce((sum, entry) => sum + entry.amount, 0),
   };
+  const todayOwnerTotals = dayOwnerTotals(data.entries, data.today, (key) => ownerNameByKey.get(key) ?? '', data.owners.map((item) => item.key));
   const analysisDays = dailyTotals(data.entries, month, { ownerKey: analysisOwner });
   const analysisMap = new Map(analysisDays.map((item) => [item.date, item]));
   const maxExpenseDay = analysisDays.reduce<DailyTotal | null>(
@@ -426,6 +447,17 @@ export default function Home() {
     setDisplayedMonth(dateValue.toISOString().slice(0, 7));
   }
 
+  /** 选日期时同步时间：选到今天用当前时刻，选到过去日期用 12:00，避免把“现在”安到别的日子上。 */
+  function pickEntryDate(next: string) {
+    const wasToday = date === data.today;
+    setDate(next);
+    if (next === data.today) {
+      if (!wasToday) setEntryTime(chinaTime());
+    } else if (wasToday) {
+      setEntryTime('12:00');
+    }
+  }
+
   function openCreate(presetType: Entry['type'] = 'expense', presetDate = data.today) {
     if (!dataReady || presetDate > data.today) return;
     entryPhotos.forEach((photo) => URL.revokeObjectURL(photo.preview));
@@ -436,8 +468,13 @@ export default function Home() {
     setAmount('');
     setSelectedOwner(sessionRef.current?.ownerKey ?? null);
     setDate(presetDate);
+    setEntryTime(presetDate === data.today ? chinaTime() : '12:00');
     setNote('');
     setFormError('');
+    document.querySelector<HTMLDialogElement>('.modal[aria-labelledby="entry-dialog-title"]')?.scrollTo({ top: 0 });
+    openModal('entry');
+    setFormError('');
+    document.querySelector<HTMLDialogElement>('.modal[aria-labelledby="entry-dialog-title"]')?.scrollTo({ top: 0 });
     openModal('entry');
   }
 
@@ -623,6 +660,7 @@ export default function Home() {
           amount: toCents(amount),
           ownerKey: selectedOwner,
           date,
+          time: entryTime,
           note,
           category: entryCategory,
         },
@@ -736,9 +774,10 @@ export default function Home() {
             <strong>{entry.note || (entry.type === 'income' ? '一笔收入' : '一笔支出')}</strong>
             <span>{entry.date === data.today ? '今天' : `${dateLabel(entry.date)} · 星期${dayOfWeek(entry.date)}`}<i />{entry.type === 'income' ? '收入' : '支出'}<i />{entry.category}{entry.createdBy && entry.createdBy !== entry.ownerKey ? <><i />{ownerNameByKey.get(entry.createdBy)}记的</> : null}{entry.images.length > 0 && <span className="badge-media"><ImageIcon size={12} aria-hidden="true" />{entry.images.length}</span>}{(commentCounts.get(entry.id) ?? 0) > 0 && <span className="badge-media"><MessageCircle size={12} aria-hidden="true" />{commentCounts.get(entry.id)}</span>}</span>
           </span>
-          <span className={`tag ${ownerClass(entry.ownerKey)}`}>
-            <i className="tag-avatar" style={photo ? { backgroundImage: `url(${photo})` } : undefined} aria-hidden="true">{photo ? null : entry.ownerKey === 'together' ? <Users size={12} /> : <UserRound size={12} />}</i>
-            {entry.owner}
+          {/* 发生时间固定占一格显示（首页就是记录列表），历史记录没有时间时显示 --:--。 */}
+          <time className="entry-time" dateTime={entry.time ? `${entry.date}T${entry.time}` : entry.date} aria-label={entry.time ? `发生时间 ${entry.time}` : '未记录发生时间'}>{entry.time || '--:--'}</time>
+          <span className={`entry-owner ${ownerClass(entry.ownerKey)}`} title={entry.owner} aria-label={`归属 ${entry.owner}`} role="img">
+            <i className="entry-owner-avatar" style={photo ? { backgroundImage: `url(${photo})` } : undefined} aria-hidden="true">{photo ? null : entry.ownerKey === 'together' ? <Users size={12} /> : <UserRound size={12} />}</i>
           </span>
           <strong className={`entry-amount ${entry.type === 'income' ? 'income' : 'expense'}`}>
             {entry.type === 'income' ? '+' : '−'} {money(entry.amount)}
@@ -747,6 +786,35 @@ export default function Home() {
         </button>
       );
     });
+  }
+
+  function renderTodayOwnerSplit(type: Entry['type']) {
+    return (
+      <div className={`today-owner-split ${type}`} role="group" aria-label={`今日各归属${type === 'expense' ? '支出' : '收入'}`}>
+        {todayOwnerTotals.map((item) => {
+          const amount = item[type];
+          const photo = photoForOwner(item.key);
+          const tone = ownerClass(item.key);
+          return (
+            <span key={item.key} className={`today-owner-entry ${tone}`}>
+              {/* 归属只用小头像表示，名字通过悬停提示和无障碍标签给出。 */}
+              <i
+                className={`today-owner-avatar ${tone}${photo ? ' has-photo' : ''}`}
+                style={photo ? { backgroundImage: `url(${photo})` } : undefined}
+                title={item.owner}
+                aria-label={`${item.owner}${type === 'expense' ? '支出' : '收入'} ${money(amount)} 元`}
+                role="img"
+              >
+                {photo ? null : item.key === 'together' ? <Users size={11} /> : <span className="today-owner-initial">{item.owner.slice(0, 1)}</span>}
+              </i>
+              <strong className={`today-owner-amount ${amount > 0 ? type : 'zero'}`}>
+                {isNarrow ? `¥${money(amount)}` : money(amount)}
+              </strong>
+            </span>
+          );
+        })}
+      </div>
+    );
   }
 
   function renderToday() {
@@ -766,8 +834,18 @@ export default function Home() {
           </div>
         </section>
         <section className="today-summary-grid" aria-label="今日已记录收支">
-          <div className="today-summary-card"><span>今日支出</span><strong className="expense">¥ {money(todaySummary.expense)}</strong><small>{todayEntries.filter((entry) => entry.type === 'expense').length} 笔</small></div>
-          <div className="today-summary-card"><span>今日收入</span><strong className="income">¥ {money(todaySummary.income)}</strong><small>{todayEntries.filter((entry) => entry.type === 'income').length} 笔</small></div>
+          <div className="today-summary-card">
+            <span>今日支出</span>
+            <strong className="expense">¥ {money(todaySummary.expense)}</strong>
+            <small>全天 {todayExpenseEntries.length} 笔</small>
+            {renderTodayOwnerSplit('expense')}
+          </div>
+          <div className="today-summary-card">
+            <span>今日收入</span>
+            <strong className="income">¥ {money(todaySummary.income)}</strong>
+            <small>全天 {todayIncomeEntries.length} 笔</small>
+            {renderTodayOwnerSplit('income')}
+          </div>
         </section>
         <section className="today-records panel">
           <div className="section-head"><div><h2>今天的记录 <span>{todayEntries.length} 笔</span></h2></div><button className="text-button" onClick={() => { goTo('records'); setRecordMode('calendar'); resetFilters(); }}>查看日历 <CalendarDays size={16} /></button></div>
@@ -1101,7 +1179,8 @@ export default function Home() {
                 </span>
                 <span className="owner-choice-name">{item.name}</span>
               </button>;
-            })}</div><label className="field-label">分类 <span>*</span></label><div className="category-choices" role="group" aria-label="记账分类">{data.categories[entryType].map((item) => <button key={item} type="button" aria-pressed={entryCategory === item} className={entryCategory === item ? 'selected' : ''} onClick={() => setEntryCategory(item)}>{item}</button>)}</div>{<div className="form-field entry-photo-field"><span>照片<span className="optional">选填，最多 {MAX_ENTRY_IMAGES} 张</span></span><PhotoPicker photos={entryPhotos} onChange={setEntryPhotos} max={MAX_ENTRY_IMAGES} disabled={busy} onReject={notify} /></div>}<div className="form-field"><span>发生日期</span><DatePicker value={date} max={ledger.today} onChange={setDate} /></div><label className="form-field">备注<span className="optional">选填</span><input maxLength={100} placeholder="这一笔，是生活里的什么？" value={note} onChange={(event) => setNote(event.target.value)} /></label></>{formError && <p className="form-error" role="alert">{formError}</p>}<div className="modal-actions"><button className="primary" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Check size={18} />} {busy ? '保存中…' : '保存'}</button></div></></form>}</div></dialog>
+            })}</div><label className="field-label">分类 <span>*</span></label><div className="category-choices" role="group" aria-label="记账分类">{data.categories[entryType].map((item) => <button key={item} type="button" aria-pressed={entryCategory === item} className={entryCategory === item ? 'selected' : ''} onClick={() => setEntryCategory(item)}>{item}</button>)}</div>{<div className="form-field entry-photo-field"><span>照片<span className="optional">选填，最多 {MAX_ENTRY_IMAGES} 张</span></span><PhotoPicker photos={entryPhotos} onChange={setEntryPhotos} max={MAX_ENTRY_IMAGES} disabled={busy} onReject={notify} /></div>}<div className="form-field"><span>发生日期</span><DatePicker value={date} max={ledger.today} onChange={pickEntryDate} /></div><div className="form-field"><span>发生时间</span><TimePicker value={entryTime} max={date === ledger.today ? chinaTime() : undefined} onChange={setEntryTime} /></div><label className="form-field">备注<span className="optional">选填</span><input maxLength={100} placeholder="这一笔，是生活里的什么？" value={note} onChange={(event) => setNote(event.target.value)} /></label></>{formError && <p className="form-error" role="alert">{formError}</p>}<div className="modal-actions"><button className="primary" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Check size={18} />} {busy ? '保存中…' : '保存'}</button></div></></form>}</div></dialog>
+
       {toast && <div className={`toast${toastLeaving ? ' leaving' : ''}`} role="status"><Check size={17} />{toast}</div>}
     </div>
   );

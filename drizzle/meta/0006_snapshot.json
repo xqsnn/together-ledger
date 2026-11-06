@@ -2,7 +2,7 @@
   "version": "6",
   "dialect": "sqlite",
   "id": "3b39b76b-1d28-4cc9-8764-20ddb01cbb2c",
-  "prevId": "40feac5e-0d0d-426d-91e8-9a297b1fdf51",
+  "prevId": "ebffca3c-1779-481e-9f93-e0b3978dab10",
   "tables": {
     "accounts": {
       "name": "accounts",
@@ -256,6 +256,14 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        },
+        "time": {
+          "name": "time",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": ""
         },
         "note": {
           "name": "note",

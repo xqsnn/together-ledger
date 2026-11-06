@@ -393,7 +393,7 @@ export default function EntryPage() {
           </section>
 
           <dl className="entry-meta">
-            <div><dt>发生日期</dt><dd>{dateLabel(entry.date)} · 星期{dayOfWeek(entry.date)}</dd></div>
+            <div><dt>发生日期</dt><dd>{dateLabel(entry.date)} · 星期{dayOfWeek(entry.date)}{entry.time ? ` · ${entry.time}` : ''}</dd></div>
             <div><dt>归属</dt><dd>{entry.owner}</dd></div>
             <div><dt>分类</dt><dd>{entry.category}</dd></div>
             <div><dt>记录人</dt><dd>{entry.createdBy ? ownerNames[entry.createdBy] ?? entry.createdBy : '共同'}</dd></div>

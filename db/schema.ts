@@ -6,7 +6,10 @@ export const entries = sqliteTable('entries', {
  ownerKey: text('owner').notNull(),
  // created_by 记录「谁登录着记的这笔」，与归属解耦：可以替对方代记，也可以两人一起记。
  createdBy: text('created_by'),
- date: text('date').notNull(), note: text('note').notNull().default(''), category: text('category').notNull().default('其他'),
+ date: text('date').notNull(),
+ // 发生时刻（北京时间 HH:mm），历史记录为空串表示只记了日期。
+ time: text('time').notNull().default(''),
+ note: text('note').notNull().default(''), category: text('category').notNull().default('其他'),
  revision: integer('revision').notNull().default(1), createdAt: text('created_at').notNull(),
 });
 export const owners = sqliteTable('owners', {

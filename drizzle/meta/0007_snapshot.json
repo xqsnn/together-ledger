@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "e01c4823-d3c0-4ed7-b1aa-76b78346123b",
-  "prevId": "3b39b76b-1d28-4cc9-8764-20ddb01cbb2c",
+  "id": "a8b94ce7-dc6c-4c4a-b9e0-f991298bedb0",
+  "prevId": "e01c4823-d3c0-4ed7-b1aa-76b78346123b",
   "tables": {
     "accounts": {
       "name": "accounts",
@@ -343,6 +343,14 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        },
+        "time": {
+          "name": "time",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "''"
         },
         "note": {
           "name": "note",

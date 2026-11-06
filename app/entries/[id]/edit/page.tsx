@@ -5,9 +5,10 @@ import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeft, Check, JapaneseYen, LoaderCircle, UserRound, Users } from 'lucide-react';
 import { MoneyBagIcon } from '@/components/money-bag-icon';
 import { DatePicker } from '@/components/date-picker';
+import { TimePicker } from '@/components/time-picker';
 import { Segmented } from '@/components/segmented';
 import LoginScreen, { type AuthSession } from '@/components/login-screen';
-import { chinaToday, toCents, type Entry, type OwnerKey } from '@/lib/ledger';
+import { chinaTime, chinaToday, toCents, type Entry, type OwnerKey } from '@/lib/ledger';
 
 type LedgerEntry = Entry & { images: { id: string }[] };
 type Ledger = {
@@ -33,6 +34,7 @@ export default function EditEntryPage() {
   const [amount, setAmount] = useState('');
   const [selectedOwner, setSelectedOwner] = useState<OwnerKey | null>(null);
   const [date, setDate] = useState(chinaToday());
+  const [entryTime, setEntryTime] = useState(chinaTime());
   const [note, setNote] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -56,6 +58,7 @@ export default function EditEntryPage() {
       setAmount((target.amount / 100).toFixed(2));
       setSelectedOwner(target.ownerKey);
       setDate(target.date);
+      setEntryTime(target.time || '12:00');
       setNote(target.note);
       setReady(true);
     }
@@ -104,6 +107,7 @@ export default function EditEntryPage() {
             amount: toCents(amount),
             ownerKey: selectedOwner,
             date,
+            time: entryTime,
             note,
             category: entryCategory,
           },
@@ -179,6 +183,7 @@ export default function EditEntryPage() {
             </div>
 
             <div className="form-field"><span>发生日期</span><DatePicker value={date} max={ledger?.today ?? chinaToday()} onChange={setDate} /></div>
+            <div className="form-field"><span>发生时间</span><TimePicker value={entryTime} max={date === (ledger?.today ?? chinaToday()) ? chinaTime() : undefined} onChange={setEntryTime} /></div>
             <label className="form-field">备注<span className="optional">选填</span><input maxLength={100} placeholder="这一笔，是生活里的什么？" value={note} onChange={(event) => setNote(event.target.value)} /></label>
 
             {error && <p className="form-error" role="alert">{error}</p>}

@@ -1,5 +1,5 @@
 import { env } from 'cloudflare:workers';
-import { chinaToday, expenseCategories, incomeCategories, ownerKeys, validateEntry, type OwnerKey } from '@/lib/ledger';
+import { chinaStamp, chinaTime, chinaToday, expenseCategories, incomeCategories, ownerKeys, validateEntry, type OwnerKey } from '@/lib/ledger';
 import {
   IMAGE_LIMITS,
   MAX_COMMENT_IMAGES,
@@ -16,7 +16,7 @@ import { readSession } from '@/lib/auth-server';
 export const dynamic='force-dynamic';
 // 一本共享账本：所有登录成员看到同一份数据，登录只用来区分「谁在记账」。
 
-type EntryRow={id:string;type:string;amount:number;owner:string;created_by?:string|null;date:string;note:string;category?:string;revision:number;created_at:string};
+type EntryRow={id:string;type:string;amount:number;owner:string;created_by?:string|null;date:string;time?:string;note:string;category?:string;revision:number;created_at:string};
 type AvatarRow={owner:string;data:string};
 type CategoryRow={type:string;name:string;position:number};
 type OwnerRow={key:string;name:string;position:number};
@@ -148,7 +148,9 @@ async function read(viewer:OwnerKey){
    const ownerKey=resolveOwnerKey(r.owner,ownerList);
    // 存量记录没有 created_by：归属是具体某人就当作本人记的，「共同」无法判断，留空。
    const createdBy=r.created_by?resolveOwnerKey(r.created_by,ownerList):(ownerKey==='together'?null:ownerKey);
-   return {...r,owner:ownerNameByKey.get(ownerKey)??r.owner,ownerKey,createdBy,category:r.category||'其他',createdAt:r.created_at,images:mediaByEntry.get(r.id)??[]};
+   // 没有 time 的旧库/旧记录：用写入时刻回填北京时间，界面不会因为缺列而报错。
+   const stamp=r.time?null:chinaStamp(r.created_at);
+   return {...r,owner:ownerNameByKey.get(ownerKey)??r.owner,ownerKey,createdBy,category:r.category||'其他',time:r.time||stamp?.time||'',createdAt:r.created_at,images:mediaByEntry.get(r.id)??[]};
   }),
   comments,
   mediaLimits:mediaLimits(),
@@ -210,14 +212,16 @@ export async function POST(request:Request){
    if(mode==='create'||(!mode&&!id)){
     const entryId=mode==='create'?id:(id??crypto.randomUUID());
     if(!isValidId(entryId))return fail('ENTRY_INVALID','记录无效',400);
-    const readExisting=()=>database.prepare('SELECT id, revision, type, amount, owner, date, note, category FROM entries WHERE id=?').bind(entryId).first<{id:string;revision:number;type:string;amount:number;owner:string;date:string;note:string;category:string|null}>();
-    const same=(row:{type:string;amount:number;owner:string;date:string;note:string;category:string|null}|null)=>Boolean(row)&&row!.type===v.type&&Number(row!.amount)===v.amount&&row!.owner===v.ownerKey&&row!.date===v.date&&row!.note===v.note&&(row!.category||'其他')===v.category;
+    const readExisting=()=>database.prepare('SELECT id, revision, type, amount, owner, date, time, note, category FROM entries WHERE id=?').bind(entryId).first<{id:string;revision:number;type:string;amount:number;owner:string;date:string;time:string;note:string;category:string|null}>();
+    const same=(row:{type:string;amount:number;owner:string;date:string;time:string;note:string;category:string|null}|null)=>Boolean(row)&&row!.type===v.type&&Number(row!.amount)===v.amount&&row!.owner===v.ownerKey&&row!.date===v.date&&(row!.time||'')===(v.time||'')&&row!.note===v.note&&(row!.category||'其他')===v.category;
     // 幂等新建：同一个客户端 id 重试只会落一条；并发撞 id 时用 OR IGNORE 兜住主键。
-    const inserted=await database.prepare('INSERT OR IGNORE INTO entries (id,type,amount,owner,created_by,date,note,category,revision,created_at) VALUES (?,?,?,?,?,?,?,?,1,?)').bind(entryId,v.type,v.amount,v.ownerKey,session.ownerKey,v.date,v.note,v.category,new Date().toISOString()).run();
+    const inserted=await database.prepare('INSERT OR IGNORE INTO entries (id,type,amount,owner,created_by,date,time,note,category,revision,created_at) VALUES (?,?,?,?,?,?,?,?,?,1,?)').bind(entryId,v.type,v.amount,v.ownerKey,session.ownerKey,v.date,v.time||chinaTime(),v.note,v.category,new Date().toISOString()).run();
     if(!inserted.meta.changes&&!same(await readExisting()))return fail('ENTRY_CONFLICT','记录已存在且内容不同，请刷新后重试',409);
    }else{
     if(!isValidId(id)||!Number.isInteger(revision))return fail('ENTRY_INVALID','记录无效',400);
-    const r=await database.prepare('UPDATE entries SET type=?,amount=?,owner=?,date=?,note=?,category=?,revision=revision+1 WHERE id=? AND revision=?').bind(v.type,v.amount,v.ownerKey,v.date,v.note,v.category,id,revision).run();
+    // 编辑时不带 time 表示保留原时间，避免改备注把发生时刻冲掉。
+    const keepTime=typeof b.entry?.time!=='string';
+    const r=await database.prepare('UPDATE entries SET type=?,amount=?,owner=?,date=?,time=CASE WHEN ? THEN time ELSE ? END,note=?,category=?,revision=revision+1 WHERE id=? AND revision=?').bind(v.type,v.amount,v.ownerKey,v.date,keepTime?1:0,v.time,v.note,v.category,id,revision).run();
     if(!r.meta.changes)return fail('REVISION_CONFLICT','记录已被更新或删除，请刷新后重试',409);
    }
   }else if(b.action==='comment-add'){
