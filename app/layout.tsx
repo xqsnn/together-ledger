@@ -7,7 +7,10 @@ export const metadata: Metadata = {
   description: '两个人，一本账。一起记录收支，慢慢积攒生活。',
   applicationName: '两人账本',
   manifest: '/manifest.webmanifest',
-  icons: { icon: '/favicon.svg', apple: '/icons/apple-touch-icon.png' },
+  icons: {
+    icon: '/favicon.svg',
+    apple: [{ url: '/icons/apple-touch-icon.png', sizes: '180x180', type: 'image/png' }],
+  },
   // 从主屏幕启动时全屏运行、没有地址栏；default 状态栏让 iOS 自己让出安全区。
   appleWebApp: { capable: true, title: '两人账本', statusBarStyle: 'default' },
   formatDetection: { telephone: false, date: false, email: false, address: false },
