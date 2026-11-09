@@ -507,7 +507,7 @@ svg { flex-shrink: 0; }
 .avatar-input { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .error-banner { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 24px; padding: 12px 16px; border: 1px solid rgba(230, 204, 188, .8); border-radius: 10px; color: #8c573c; background: linear-gradient(150deg, rgba(250, 240, 232, .82), rgba(248, 233, 222, .58)); -webkit-backdrop-filter: var(--glass-blur-sm); backdrop-filter: var(--glass-blur-sm); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .75); font-size: 13px; }
 .error-banner button { min-height: 32px; font-size: 13px; }
-.toast { position: fixed; bottom: 30px; left: calc(50% + var(--sidebar-width) / 2); transform: translateX(-50%); display: flex; align-items: center; gap: 9px; max-width: min(550px, 90vw); padding: 14px 22px; border: 1px solid rgba(255, 255, 255, .12); border-radius: 14px; background: rgba(45, 72, 59, .88); color: #f5f7ef; font-size: 14px; box-shadow: 0 16px 40px rgba(31, 48, 40, .28), inset 0 1px 0 rgba(255, 255, 255, .1); -webkit-backdrop-filter: blur(18px) saturate(180%); backdrop-filter: blur(18px) saturate(180%); z-index: 100; transition: opacity .28s var(--ease-out), transform .46s var(--ease-spring); animation: toast-in .52s var(--ease-spring-strong) backwards; }
+.toast { position: fixed; bottom: 30px; left: calc(50% + var(--sidebar-width) / 2); transform: translateX(-50%); display: flex; align-items: center; gap: 8px; /* 靠 max-content 决定宽度：否则 left:50% 会让可用宽度只剩一半，短句也会折行 */ width: max-content; max-width: min(88vw, 520px); padding: 13px 20px; line-height: 1.45; border: 1px solid rgba(255, 255, 255, .12); border-radius: 15px; background: rgba(45, 72, 59, .88); color: #f5f7ef; font-size: 14px; box-shadow: 0 16px 40px rgba(31, 48, 40, .28), inset 0 1px 0 rgba(255, 255, 255, .1); -webkit-backdrop-filter: blur(18px) saturate(180%); backdrop-filter: blur(18px) saturate(180%); z-index: 100; transition: opacity .28s var(--ease-out), transform .46s var(--ease-spring); animation: toast-in .52s var(--ease-spring-strong) backwards; }
 .toast.leaving { opacity: 0; transform: translate(-50%, 6px) scale(.96); }
 .toast > svg { animation: icon-pop .5s var(--ease-spring-strong) backwards; }
 .spin { animation: spin 1s linear infinite; }
@@ -935,7 +935,7 @@ svg { flex-shrink: 0; }
   .date-popover { padding: 10px; }
   .time-popover { padding: 10px; }
   .time-options { height: 132px; }
-  .toast { bottom: calc(90px + env(safe-area-inset-bottom)); left: 50%; font-size: 13px; padding: 13px 18px; }
+  .toast { bottom: calc(90px + env(safe-area-inset-bottom)); left: 50%; font-size: 13px; padding: 12px 17px; }
 }
 
 /* 手机竖屏：卡片较窄，一人一行，头像后紧跟当天金额，保证六位数不被截断。 */

@@ -49,6 +49,7 @@ import {
 } from '@/lib/ledger';
 import { MonthPicker } from '@/components/month-picker';
 import TrendLineChart from '@/components/trend-line-chart';
+import { pickRecordToast } from '@/lib/record-toasts';
 import { DatePicker } from '@/components/date-picker';
 import { TimePicker } from '@/components/time-picker';
 import { Segmented } from '@/components/segmented';
@@ -738,7 +739,7 @@ export default function Home() {
       setCategoryFilter('全部');
       if (date === data.today) {
         selectDay(data.today);
-        notify('记下了，又是生活的一笔');
+        notify(pickRecordToast(entryType === 'income' ? 'income' : 'expense'));
       } else {
         // 补记历史日期时首页看不到这一笔，切到账目并选到那一天。
         selectDay(date);
