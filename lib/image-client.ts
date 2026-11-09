@@ -3,7 +3,6 @@
 import type { MediaLimits, MediaMeta } from './media';
 
 export type PreparedImage = { full: Blob; thumb: Blob; width: number; height: number };
-type UploadTarget = 'entry' | 'comment';
 
 const MAX_SOURCE_BYTES = 25 * 1024 * 1024;
 
@@ -90,13 +89,13 @@ export async function prepareImage(file: File, limits: Pick<MediaLimits, 'maxByt
 }
 
 export function uploadMedia(
-  input: { id: string; target: UploadTarget; targetId: string; full: Blob; thumb: Blob; width: number; height: number },
+  input: { id: string; targetId: string; full: Blob; thumb: Blob; width: number; height: number },
   onProgress?: (percent: number) => void,
 ): Promise<MediaMeta> {
   return new Promise((resolve, reject) => {
     const form = new FormData();
     form.append('id', input.id);
-    form.append('target', input.target);
+    form.append('target', 'entry');
     form.append('targetId', input.targetId);
     form.append('width', String(input.width));
     form.append('height', String(input.height));

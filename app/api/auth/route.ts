@@ -10,20 +10,13 @@ import {
   readSession,
 } from '@/lib/auth-server';
 import {
-  INVITE_MAX_ATTEMPTS,
   LOCK_MINUTES,
   MAX_FAILED_ATTEMPTS,
   clearSessionCookie,
-  constantTimeEqualHex,
-  createInviteCode,
   createPasswordRecord,
-  inviteExpiry,
   isSecureRequest,
-  isSessionExpired,
-  normalizeInviteCode,
   passwordProblem,
   sessionCookie,
-  sha256Hex,
   verifyPassword,
 } from '@/lib/auth';
 import type { OwnerKey } from '@/lib/ledger';
@@ -65,8 +58,6 @@ export async function GET(request: Request) {
       {
         session: session ? { ownerKey: session.ownerKey, name: session.name } : null,
         owners,
-        // 一个都没设置密码时，第一个进来的人可以直接认领，不需要邀请码。
-        bootstrap: owners.every((owner) => !owner.claimed),
       },
       200,
       session?.cookie ?? undefined,
@@ -136,33 +127,8 @@ export async function POST(request: Request) {
 
       if (await readAccount(ownerKey)) return reply({ error: '这个身份已经设置过密码，请直接登录' }, 409);
 
-      // 另一个身份已经认领时，必须凭对方生成的一次性邀请码，防止谁都能冒充。
-      const claimed = await db.prepare('SELECT owner_key FROM accounts WHERE owner_key != ?').bind(ownerKey).all();
-      const needsCode = (claimed.results as { owner_key: string }[]).length > 0;
-
-      if (needsCode) {
-        const code = normalizeInviteCode(body.code);
-        if (!code) return reply({ error: '请输入对方给你的邀请码' }, 400);
-        const invite = await db
-          .prepare('SELECT code_hash, attempts, expires_at FROM join_codes WHERE owner_key = ?')
-          .bind(ownerKey)
-          .first<{ code_hash: string; attempts: number; expires_at: string }>();
-        if (!invite) return reply({ error: '没有可用的邀请码，请让对方在设置里重新生成' }, 400);
-        if (isSessionExpired(invite.expires_at)) {
-          await db.prepare('DELETE FROM join_codes WHERE owner_key = ?').bind(ownerKey).run();
-          return reply({ error: '邀请码已过期，请让对方重新生成' }, 400);
-        }
-        if (Number(invite.attempts) >= INVITE_MAX_ATTEMPTS) {
-          await db.prepare('DELETE FROM join_codes WHERE owner_key = ?').bind(ownerKey).run();
-          return reply({ error: '邀请码尝试次数过多，请让对方重新生成' }, 429);
-        }
-        if (!constantTimeEqualHex(await sha256Hex(code), invite.code_hash)) {
-          await db.prepare('UPDATE join_codes SET attempts = attempts + 1 WHERE owner_key = ?').bind(ownerKey).run();
-          return reply({ error: '邀请码不正确' }, 401);
-        }
-        await db.prepare('DELETE FROM join_codes WHERE owner_key = ?').bind(ownerKey).run();
-      }
-
+      // 只有两个人用的私人账本：第二位成员直接设置自己的密码即可，不再要求邀请码。
+      // 代价是未认领的身份可能被先到先得，但这比每次都要人工传码省事。
       const record = await createPasswordRecord(String(body.password));
       const now = new Date().toISOString();
       await db
@@ -204,24 +170,6 @@ export async function POST(request: Request) {
       // 其它设备上的登录态全部作废，只保留当前这台。
       await deleteOwnerSessions(session.ownerKey, session.tokenHash);
       return reply({ ok: true });
-    }
-
-    if (body.action === 'invite') {
-      const session = await readSession(request);
-      if (!session) return reply({ error: '请先登录' }, 401);
-      const target = loginKey(body.ownerKey);
-      if (!target) return reply({ error: '邀请对象无效' }, 400);
-      if (target === session.ownerKey) return reply({ error: '不能邀请自己' }, 400);
-      if (await readAccount(target)) return reply({ error: '对方已经设置过登录密码了' }, 409);
-
-      const code = createInviteCode();
-      const expiresAt = inviteExpiry();
-      await db
-        .prepare('INSERT INTO join_codes (owner_key, code_hash, attempts, expires_at, created_at) VALUES (?,?,0,?,?) ON CONFLICT(owner_key) DO UPDATE SET code_hash = excluded.code_hash, attempts = 0, expires_at = excluded.expires_at, created_at = excluded.created_at')
-        .bind(target, await sha256Hex(code), expiresAt, new Date().toISOString())
-        .run();
-      const names = await readOwnerNames(db);
-      return reply({ code, expiresAt, ownerKey: target, name: displayName(names, target) });
     }
 
     return reply({ error: '不支持的操作' }, 400);

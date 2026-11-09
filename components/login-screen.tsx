@@ -1,19 +1,19 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { ArrowLeft, Check, LoaderCircle, Lock, UserRound } from 'lucide-react';
+import { ArrowLeft, Check, LoaderCircle, UserRound } from 'lucide-react';
 import Duo from '@/components/duo';
 import type { OwnerKey } from '@/lib/ledger';
 
 export type AuthSession = { ownerKey: OwnerKey; name: string };
 type AuthOwner = { key: OwnerKey; name: string; claimed: boolean };
-type AuthInfo = { session: AuthSession | null; owners: AuthOwner[]; bootstrap: boolean };
+type AuthInfo = { session: AuthSession | null; owners: AuthOwner[] };
 
 const ownerClass = (key: string) => (key === 'qing' ? 'qing' : key === 'hua' ? 'hua' : 'together');
 
 /**
  * 登录门禁：两个身份各有一个密码。
- * 「共同」不是账号，所以这里只出现青和华。
+ * 只有两个人用，所以没有邀请码——第一次点自己的名字设置密码即可。
  */
 export default function LoginScreen({ onAuthenticated }: { onAuthenticated: (session: AuthSession) => void }) {
   const [info, setInfo] = useState<AuthInfo | null>(null);
@@ -21,7 +21,6 @@ export default function LoginScreen({ onAuthenticated }: { onAuthenticated: (ses
   const [selected, setSelected] = useState<OwnerKey | null>(null);
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
-  const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -53,7 +52,6 @@ export default function LoginScreen({ onAuthenticated }: { onAuthenticated: (ses
     setSelected(null);
     setPassword('');
     setConfirm('');
-    setCode('');
     setError('');
   }
 
@@ -72,7 +70,7 @@ export default function LoginScreen({ onAuthenticated }: { onAuthenticated: (ses
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(
           setupMode
-            ? { action: 'setup', ownerKey: target.key, password, code }
+            ? { action: 'setup', ownerKey: target.key, password }
             : { action: 'login', ownerKey: target.key, password },
         ),
       });
@@ -110,7 +108,7 @@ export default function LoginScreen({ onAuthenticated }: { onAuthenticated: (ses
                   key={owner.key}
                   type="button"
                   className={`login-owner ${ownerClass(owner.key)}`}
-                  onClick={() => { setSelected(owner.key); setError(''); setPassword(''); setConfirm(''); setCode(''); }}
+                  onClick={() => { setSelected(owner.key); setError(''); setPassword(''); setConfirm(''); }}
                 >
                   <span className={`login-owner-avatar ${ownerClass(owner.key)}`}><UserRound size={20} aria-hidden="true" /></span>
                   <span className="login-owner-name">{owner.name}</span>
@@ -118,7 +116,7 @@ export default function LoginScreen({ onAuthenticated }: { onAuthenticated: (ses
                 </button>
               ))}
             </div>
-            <p className="login-hint">「共同」是记账的归属，不是登录身份，谁记都可以选它。</p>
+            <p className="login-hint">「共同」是记账的归属，不需要单独登录。</p>
           </>
         ) : (
           <form className="login-form" onSubmit={submit}>
@@ -153,24 +151,6 @@ export default function LoginScreen({ onAuthenticated }: { onAuthenticated: (ses
                   placeholder="再输入一次"
                 />
               </label>
-            )}
-
-            {setupMode && !info.bootstrap && (
-              <label className="login-field">
-                <span>邀请码</span>
-                <input
-                  inputMode="text"
-                  maxLength={12}
-                  value={code}
-                  onChange={(event) => setCode(event.target.value)}
-                  placeholder="对方在设置里生成"
-                />
-                <small>第一次设置需要另一位已登录的成员为你生成邀请码。</small>
-              </label>
-            )}
-
-            {setupMode && info.bootstrap && (
-              <p className="login-note"><Lock size={14} aria-hidden="true" />这是账本的第一个账号，设置好之后，另一位需要在设置页里拿到邀请码才能设置。</p>
             )}
 
             {error && <p className="login-error-text" role="alert">{error}</p>}

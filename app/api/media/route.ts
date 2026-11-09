@@ -3,7 +3,6 @@ import { readSession } from '@/lib/auth-server';
 import {
   IMAGE_LIMITS,
   MAX_ENTRY_IMAGES,
-  MAX_COMMENT_IMAGES,
   MAX_IMAGE_DIMENSION,
   MediaError,
   isThumbJpeg,
@@ -51,10 +50,9 @@ function mediaMeta(row: MediaRow) {
   return { id: row.id, width: Number(row.width), height: Number(row.height), bytes: Number(row.bytes), thumbBytes: Number(row.thumb_bytes) };
 }
 
-function sameTarget(row: MediaRow, target: string, targetId: string) {
-  return target === 'entry'
-    ? row.entry_id === targetId && row.comment_id === null
-    : row.comment_id === targetId && row.entry_id === null;
+/** 图片只归属记录；comment_id 列仍保留但不再写入。 */
+function sameTarget(row: MediaRow, targetId: string) {
+  return row.entry_id === targetId && row.comment_id === null;
 }
 
 async function cleanupObjects(storage: MediaStorage, id: string, hasThumb: boolean) {
@@ -79,7 +77,7 @@ export async function POST(request: Request) {
     const targetId = form.get('targetId');
     const file = form.get('file');
     const thumb = form.get('thumb');
-    if (!isValidId(id) || (target !== 'entry' && target !== 'comment') || !isValidId(targetId) || !(file instanceof File)) {
+    if (!isValidId(id) || target !== 'entry' || !isValidId(targetId) || !(file instanceof File)) {
       throw mediaError('IMAGE_INVALID', '图片参数无效');
     }
     const width = Number(form.get('width'));
@@ -99,16 +97,14 @@ export async function POST(request: Request) {
       .bind(id)
       .first<MediaRow>();
     if (existing) {
-      if (sameTarget(existing, target, targetId) && Number(existing.bytes) === data.byteLength) {
+      if (sameTarget(existing, targetId) && Number(existing.bytes) === data.byteLength) {
         return json({ media: mediaMeta(existing) }, 200);
       }
       throw mediaError('IMAGE_CONFLICT', '这张图片已被占用，请重新选择');
     }
 
-    const targetExists = target === 'entry'
-      ? await db.prepare('SELECT 1 AS found FROM entries WHERE id=?').bind(targetId).first<{ found: number }>()
-      : await db.prepare('SELECT 1 AS found FROM comments WHERE id=?').bind(targetId).first<{ found: number }>();
-    if (!targetExists) throw mediaError('TARGET_NOT_FOUND', target === 'entry' ? '记录不存在或已删除' : '评论不存在或已删除');
+    const targetExists = await db.prepare('SELECT 1 AS found FROM entries WHERE id=?').bind(targetId).first<{ found: number }>();
+    if (!targetExists) throw mediaError('TARGET_NOT_FOUND', '记录不存在或已删除');
 
     const mime = sniffImageMime(data);
     if (!mime) throw mediaError('IMAGE_UNSUPPORTED', '只支持 JPG / PNG / WebP 图片');
@@ -134,19 +130,12 @@ export async function POST(request: Request) {
 
     const createdAt = new Date().toISOString();
     const thumbMime = thumbBuffer ? 'image/jpeg' : null;
-    const insert = target === 'entry'
-      ? db.prepare(
-        `INSERT INTO media (id, entry_id, comment_id, storage, mime, width, height, bytes, thumb_mime, thumb_bytes, created_by, created_at)
-         SELECT ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?
-         WHERE (SELECT COUNT(*) FROM media WHERE entry_id = ?) < ?
-         ON CONFLICT(id) DO NOTHING`,
-      ).bind(id, targetId, mode, mime, width, height, data.byteLength, thumbMime, thumbBytes, session.ownerKey, createdAt, targetId, MAX_ENTRY_IMAGES)
-      : db.prepare(
-        `INSERT INTO media (id, entry_id, comment_id, storage, mime, width, height, bytes, thumb_mime, thumb_bytes, created_by, created_at)
-         SELECT ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-         WHERE (SELECT COUNT(*) FROM media WHERE comment_id = ?) < ?
-         ON CONFLICT(id) DO NOTHING`,
-      ).bind(id, targetId, mode, mime, width, height, data.byteLength, thumbMime, thumbBytes, session.ownerKey, createdAt, targetId, MAX_COMMENT_IMAGES);
+    const insert = db.prepare(
+      `INSERT INTO media (id, entry_id, comment_id, storage, mime, width, height, bytes, thumb_mime, thumb_bytes, created_by, created_at)
+       SELECT ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE (SELECT COUNT(*) FROM media WHERE entry_id = ?) < ?
+       ON CONFLICT(id) DO NOTHING`,
+    ).bind(id, targetId, mode, mime, width, height, data.byteLength, thumbMime, thumbBytes, session.ownerKey, createdAt, targetId, MAX_ENTRY_IMAGES);
 
     let changes = 0;
     try {
@@ -154,7 +143,7 @@ export async function POST(request: Request) {
       changes = Number(result.meta.changes) || 0;
     } catch (error) {
       await cleanupObjects(mode, id, Boolean(thumbBuffer));
-      if (isForeignKeyError(error)) throw mediaError('TARGET_NOT_FOUND', '记录或评论刚被删除，请刷新后重试');
+      if (isForeignKeyError(error)) throw mediaError('TARGET_NOT_FOUND', '记录刚被删除，请刷新后重试');
       throw error;
     }
 
@@ -169,11 +158,11 @@ export async function POST(request: Request) {
       .first<MediaRow>();
     if (again) {
       // 并发同 id：对象 key 由 id 决定，可能正是对方那一行的对象，不能删。
-      if (sameTarget(again, target, targetId) && Number(again.bytes) === data.byteLength) return json({ media: mediaMeta(again) }, 200);
+      if (sameTarget(again, targetId) && Number(again.bytes) === data.byteLength) return json({ media: mediaMeta(again) }, 200);
       throw mediaError('IMAGE_CONFLICT', '这张图片已被占用，请重新选择');
     }
     await cleanupObjects(mode, id, Boolean(thumbBuffer));
-    throw mediaError('IMAGE_LIMIT', target === 'entry' ? `每条记录最多 ${MAX_ENTRY_IMAGES} 张图片` : `每条评论最多 ${MAX_COMMENT_IMAGES} 张图片`);
+    throw mediaError('IMAGE_LIMIT', `每条记录最多 ${MAX_ENTRY_IMAGES} 张图片`);
   } catch (error) {
     return failure(error);
   }

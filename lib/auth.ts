@@ -19,14 +19,9 @@ export const PASSWORD_MAX_LENGTH = 64;
 export const DEFAULT_PBKDF2_ITERATIONS = 100_000;
 export const MAX_FAILED_ATTEMPTS = 5;
 export const LOCK_MINUTES = 15;
-export const INVITE_TTL_HOURS = 24;
-export const INVITE_MAX_ATTEMPTS = 10;
-export const INVITE_CODE_LENGTH = 6;
 
 const DAY_MS = 86_400_000;
 const encoder = new TextEncoder();
-/** 去掉 0/O/1/I 这类容易念错、抄错的字符。 */
-const INVITE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
 export type PasswordRecord = { hash: string; salt: string; iterations: number };
 
@@ -113,20 +108,6 @@ export function sessionNeedsRenewal(expiresAt: string, now = new Date()): boolea
   const expires = Date.parse(expiresAt);
   if (!Number.isFinite(expires)) return false;
   return expires - now.getTime() < SESSION_RENEW_DAYS * DAY_MS;
-}
-
-export function createInviteCode(length = INVITE_CODE_LENGTH): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(length));
-  return Array.from(bytes, (byte) => INVITE_ALPHABET[byte % INVITE_ALPHABET.length]).join('');
-}
-
-export function normalizeInviteCode(value: unknown): string {
-  if (typeof value !== 'string') return '';
-  return value.trim().toUpperCase().replace(/[\s-]/g, '');
-}
-
-export function inviteExpiry(now = new Date()): string {
-  return new Date(now.getTime() + INVITE_TTL_HOURS * 3_600_000).toISOString();
 }
 
 export function readCookie(cookieHeader: string | null, name: string): string | null {

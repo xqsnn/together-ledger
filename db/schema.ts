@@ -36,12 +36,13 @@ export const sessions = sqliteTable('sessions', {
  id: text('id').primaryKey(), ownerKey: text('owner_key').notNull(), createdAt: text('created_at').notNull(),
  lastSeenAt: text('last_seen_at').notNull(), expiresAt: text('expires_at').notNull(),
 });
-// 已登录的一方给另一方生成的一次性认领码。
+// 认领码：已停用（登录不再需要邀请码），但表与定义必须保留——删掉会让 db:generate 生成 DROP TABLE 迁移。
 export const joinCodes = sqliteTable('join_codes', {
  ownerKey: text('owner_key').primaryKey(), codeHash: text('code_hash').notNull(), attempts: integer('attempts').notNull().default(0),
  expiresAt: text('expires_at').notNull(), createdAt: text('created_at').notNull(),
 });
-// 每条记录可评论；评论图片与记录图片共用 media 表，上传时即绑定目标。
+// 评论：已下线（前台不再使用），但表定义必须保留——media.commentId 的外键指向这里，
+// 删掉会让 schema 编译失败，并让 db:generate 产出破坏性的 DROP TABLE 迁移。
 export const comments = sqliteTable('comments', {
  id: text('id').primaryKey(), entryId: text('entry_id').notNull().references(() => entries.id, { onDelete: 'cascade' }),
  // 只允许两级：回复统一挂到根评论上，reply_to_owner 记住「回复的是谁」，用来显示「回复 @某某」。

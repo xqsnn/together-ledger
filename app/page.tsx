@@ -1,11 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import NextLink from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
   ArrowRight,
-  ArrowUpRight,
   BarChart3,
   BookHeart,
   CalendarDays,
@@ -17,13 +16,12 @@ import {
   Heart,
   ImageIcon,
   JapaneseYen,
-  Link as LinkIcon,
   List,
   LoaderCircle,
-  MessageCircle,
   Pencil,
   PieChart,
   RefreshCw,
+  RotateCcw,
   SlidersHorizontal,
   Trash2,
   TrendingUp,
@@ -60,14 +58,21 @@ import { useIsomorphicLayoutEffect } from '@/hooks/use-isomorphic-layout-effect'
 import { useSheetDrag } from '@/components/use-sheet-drag';
 import { prefersReducedMotion } from '@/lib/motion';
 import PhotoPicker, { type PickedPhoto } from '@/components/photo-picker';
-import { MAX_COMMENT_IMAGES, MAX_ENTRY_IMAGES, type CommentRecord, type MediaLimits, type MediaMeta } from '@/lib/media';
-import { stashPendingPhotos } from '@/lib/pending-uploads';
+import { MAX_ENTRY_IMAGES, type MediaLimits, type MediaMeta } from '@/lib/media';
+import {
+  enqueuePhotos,
+  getServerSnapshot,
+  getSnapshot,
+  mergeUploadedMedia,
+  onMediaUploaded,
+  setUploadLimits,
+  subscribe,
+} from '@/lib/upload-queue';
 
 type OwnerInfo = { key: OwnerKey; name: string };
 type LedgerEntry = Entry & { images: MediaMeta[] };
 type Ledger = {
   entries: LedgerEntry[];
-  comments: CommentRecord[];
   mediaLimits: MediaLimits;
   today: string;
   avatars: Partial<Record<OwnerKey, string>>;
@@ -76,20 +81,17 @@ type Ledger = {
 };
 type View = 'today' | 'records' | 'analysis' | 'settings';
 type EntryFilter = 'all' | Entry['type'];
-type ModalKind = 'entry' | 'detail' | 'share' | 'categories';
+type ModalKind = 'entry' | 'detail' | 'categories';
 type MutationBody =
   | { action: 'avatar'; ownerKey: OwnerKey; data: string }
   | { action: 'category'; op: 'add' | 'rename' | 'delete'; type: Entry['type']; name: string; newName?: string }
   | { action: 'owner'; key: OwnerKey; name: string }
   | { action: 'delete'; id: string; revision: number }
-  | { action: 'comment-add'; comment: { id: string; entryId: string; body: string } }
-  | { action: 'comment-delete'; id: string }
   | { action: 'save'; mode?: 'create' | 'update'; entry: Partial<Entry> & { type: Entry['type']; amount: number; ownerKey: OwnerKey; date: string; time?: string; note: string; category: string } };
 
 const blank: Ledger = {
   entries: [],
-  comments: [],
-  mediaLimits: { mode: 'd1', maxBytes: 700000, maxThumbBytes: 120000, maxPerEntry: MAX_ENTRY_IMAGES, maxPerComment: MAX_COMMENT_IMAGES },
+  mediaLimits: { mode: 'd1', maxBytes: 700000, maxThumbBytes: 120000, maxPerEntry: MAX_ENTRY_IMAGES },
   today: chinaToday(),
   avatars: {},
   categories: { expense: [...expenseCategories], income: [...incomeCategories] },
@@ -157,9 +159,10 @@ export default function Home() {
   const [currentPassword, setCurrentPassword] = useState('');
   const [nextPassword, setNextPassword] = useState('');
   const [accountBusy, setAccountBusy] = useState(false);
-  const [invite, setInvite] = useState<{ code: string; name: string } | null>(null);
   const [toast, setToast] = useState('');
   const [toastLeaving, setToastLeaving] = useState(false);
+  // 记录配图的上传队列放在路由之上的模块里，点进详情页也不会丢进度。
+  const uploads = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   // 卡片宽度不足以并排显示三个归属方金额时收起明细（首次渲染先按视口估算，挂载后再精确测量）。
   // 手机竖屏下收支卡片较窄，归属胶囊放不下名字和头像时只保留头像。
   const [isNarrow, setIsNarrow] = useState(() => typeof window !== 'undefined' && window.matchMedia(NARROW_QUERY).matches);
@@ -229,7 +232,9 @@ export default function Home() {
         const result = (await response.json()) as Ledger & { error?: string };
         if (!response.ok) throw new Error(result.error || '加载失败');
         if (signal?.aborted) return;
-        setLedger(result);
+        setUploadLimits(result.mediaLimits);
+        // 轮询响应可能比上传完成更早发出：把刚传好的图补回来，避免图片「闪没」。
+        setLedger({ ...result, entries: result.entries.map((entry) => mergeUploadedMedia(entry.id, entry)) });
         setHasLoaded(true);
         setError('');
       })
@@ -292,6 +297,16 @@ export default function Home() {
     if (modalCloseTimer.current) clearTimeout(modalCloseTimer.current);
   }, []);
 
+  // 图片传好后立刻并进当前列表，不用等 20 秒轮询。
+  useEffect(() => onMediaUploaded((entryId, media) => {
+    setLedger((current) => ({
+      ...current,
+      entries: current.entries.map((entry) => entry.id === entryId && !entry.images.some((photo) => photo.id === media.id)
+        ? { ...entry, images: [...entry.images, media] }
+        : entry),
+    }));
+  }), []);
+
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
@@ -313,8 +328,6 @@ export default function Home() {
   const ownerNames = data.owners.map((item) => item.name);
   const ownerKeyByName = new Map(data.owners.map((item) => [item.name, item.key]));
   const ownerNameByKey = new Map(data.owners.map((item) => [item.key, item.name]));
-  const commentCounts = new Map<string, number>();
-  data.comments.forEach((comment) => commentCounts.set(comment.entryId, (commentCounts.get(comment.entryId) ?? 0) + 1));
   const photoForOwner = (key: OwnerKey) => data.avatars?.[key] ?? (key === 'hua' ? '/huang.jpg' : '');
   const currentMonth = data.today.slice(0, 7);
   const month = view === 'analysis' ? (analysisMonth ?? currentMonth) : (calendarSelection?.month ?? currentMonth);
@@ -494,7 +507,8 @@ export default function Home() {
       if (response.status === 409) void refresh();
       throw new Error(result.error || '保存失败');
     }
-    setLedger(result);
+    setUploadLimits(result.mediaLimits);
+    setLedger({ ...result, entries: result.entries.map((entry) => mergeUploadedMedia(entry.id, entry)) });
     setHasLoaded(true);
     return result;
   }
@@ -648,7 +662,7 @@ export default function Home() {
     setBusy(true);
     try {
       if (!selectedOwner) throw new Error('请选择这笔账的归属');
-      // 新建：记录先落库，图片交给详情页续传，避免「记录改了、图没对上」的中间态。
+      // 新建：记录先落库，图片进模块级队列，避免「记录改了、图没对上」的中间态。
       const entryId = crypto.randomUUID();
       const files = entryPhotos.map((photo) => photo.file);
       await mutate({
@@ -667,13 +681,22 @@ export default function Home() {
       });
       entryPhotos.forEach((photo) => URL.revokeObjectURL(photo.preview));
       setEntryPhotos([]);
-      if (files.length) stashPendingPhotos(entryId, files);
-      selectDay(date);
+      closeModal();
+      // 图片交给模块级队列在首页后台传，不再跳详情页。
+      if (files.length) enqueuePhotos(entryId, files, 0, notify);
       setOwner('全部');
       setType('all');
-      closeModal();
-      notify(files.length ? '记下了，正在打开详情' : '记下了，又是生活的一笔');
-      router.push(`/entries/${entryId}`);
+      setCategoryFilter('全部');
+      if (date === data.today) {
+        selectDay(data.today);
+        notify('记下了，又是生活的一笔');
+      } else {
+        // 补记历史日期时首页看不到这一笔，切到账目并选到那一天。
+        selectDay(date);
+        goTo('records');
+        setRecordMode('list');
+        notify(`已记到 ${dateLabel(date)}`);
+      }
     } catch (caught) {
       setFormError(caught instanceof Error ? caught.message : '保存失败');
     } finally {
@@ -719,24 +742,8 @@ export default function Home() {
     setSession(null);
     setHasLoaded(false);
     setLedger(blank);
-    setInvite(null);
     setAccountOpen(false);
     setModal(null);
-  }
-
-  async function createInvite() {
-    const other = data.owners.find((item) => item.key !== session?.ownerKey && item.key !== 'together');
-    if (!other || accountBusy) return;
-    setAccountBusy(true);
-    try {
-      const result = (await callAuth({ action: 'invite', ownerKey: other.key })) as unknown as { code: string; name: string };
-      setInvite({ code: result.code, name: result.name });
-      notify(`邀请码已生成，发给${result.name}`);
-    } catch (caught) {
-      notify(caught instanceof Error ? caught.message : '生成失败');
-    } finally {
-      setAccountBusy(false);
-    }
   }
 
   function resetFilters() {
@@ -751,6 +758,14 @@ export default function Home() {
     setView(viewName);
     if (viewName === 'today') resetFilters();
   }
+
+  // 每笔记录的上传进度：行内只用一个计数徽标，不塞可点击按钮（整行本身是 button）。
+  const uploadsByEntry = new Map<string, { active: number; failed: number }>();
+  uploads.forEach((task) => {
+    const state = uploadsByEntry.get(task.entryId) ?? { active: 0, failed: 0 };
+    if (task.status === 'error') state.failed += 1; else state.active += 1;
+    uploadsByEntry.set(task.entryId, state);
+  });
 
   function entryRows(entries: LedgerEntry[], isToday = false, applyFilters = true) {
     if (!entries.length) {
@@ -771,11 +786,11 @@ export default function Home() {
             {entry.type === 'income' ? <MoneyBagIcon size={18} /> : <JapaneseYen size={18} strokeWidth={2} />}
           </span>
           <span className="entry-desc">
-            <strong>{entry.note || (entry.type === 'income' ? '一笔收入' : '一笔支出')}</strong>
-            <span>{entry.date === data.today ? '今天' : `${dateLabel(entry.date)} · 星期${dayOfWeek(entry.date)}`}<i />{entry.type === 'income' ? '收入' : '支出'}<i />{entry.category}{entry.createdBy && entry.createdBy !== entry.ownerKey ? <><i />{ownerNameByKey.get(entry.createdBy)}记的</> : null}{entry.images.length > 0 && <span className="badge-media"><ImageIcon size={12} aria-hidden="true" />{entry.images.length}</span>}{(commentCounts.get(entry.id) ?? 0) > 0 && <span className="badge-media"><MessageCircle size={12} aria-hidden="true" />{commentCounts.get(entry.id)}</span>}</span>
+            <strong>{entry.note || entry.category}</strong>
+            <span>{entry.date === data.today ? '今天' : `${dateLabel(entry.date)} · 星期${dayOfWeek(entry.date)}`}<i />{entry.category}{entry.createdBy && entry.createdBy !== entry.ownerKey ? <><i />{ownerNameByKey.get(entry.createdBy)}记的</> : null}{entry.images.length > 0 && <span className="badge-media"><ImageIcon size={12} aria-hidden="true" />{entry.images.length}</span>}{(uploadsByEntry.get(entry.id)?.active ?? 0) > 0 && <span className="badge-media"><LoaderCircle className="spin" size={12} aria-hidden="true" />{uploadsByEntry.get(entry.id)!.active}</span>}{(uploadsByEntry.get(entry.id)?.failed ?? 0) > 0 && <span className="badge-media badge-warn"><RotateCcw size={12} aria-hidden="true" />{uploadsByEntry.get(entry.id)!.failed}</span>}</span>
           </span>
-          {/* 发生时间固定占一格显示（首页就是记录列表），历史记录没有时间时显示 --:--。 */}
-          <time className="entry-time" dateTime={entry.time ? `${entry.date}T${entry.time}` : entry.date} aria-label={entry.time ? `发生时间 ${entry.time}` : '未记录发生时间'}>{entry.time || '--:--'}</time>
+          {/* 有发生时间才占一格；历史记录不显示占位的 --:--。 */}
+          {entry.time && <time className="entry-time" dateTime={`${entry.date}T${entry.time}`} aria-label={`发生时间 ${entry.time}`}>{entry.time}</time>}
           <span className={`entry-owner ${ownerClass(entry.ownerKey)}`} title={entry.owner} aria-label={`归属 ${entry.owner}`} role="img">
             <i className="entry-owner-avatar" style={photo ? { backgroundImage: `url(${photo})` } : undefined} aria-hidden="true">{photo ? null : entry.ownerKey === 'together' ? <Users size={12} /> : <UserRound size={12} />}</i>
           </span>
@@ -1100,14 +1115,12 @@ export default function Home() {
   function renderSettings() {
     if (!session) return null;
     const me = session;
-    const partner = data.owners.find((item) => item.key !== me.ownerKey && item.key !== 'together');
     return <div className="settings-panel panel">
       <div className="section-head"><h2>账本设置</h2><BookHeart size={20} /></div>
       <div className="setting-row account-row">
         <div className="setting-copy"><h3>登录账号</h3><p>当前以「{ownerNameByKey.get(me.ownerKey) ?? me.name}」登录</p></div>
         <div className="account-actions">
-          <button className="outline-button" onClick={() => { setAccountOpen((open) => !open); setInvite(null); }}>{accountOpen ? '收起' : '修改密码'}</button>
-          {partner && <button className="outline-button" onClick={() => void createInvite()} disabled={accountBusy}>{accountBusy ? '生成中…' : `邀请${partner.name}登录`}</button>}
+          <button className="outline-button" onClick={() => setAccountOpen((open) => !open)}>{accountOpen ? '收起' : '修改密码'}</button>
           <button className="outline-button" onClick={() => void signOut()}>退出登录</button>
         </div>
         {accountOpen && <form className="account-form" onSubmit={changePassword}>
@@ -1115,12 +1128,6 @@ export default function Home() {
           <label className="form-field">新密码<input type="password" autoComplete="new-password" minLength={6} required value={nextPassword} onChange={(event) => setNextPassword(event.target.value)} placeholder="至少 6 位" /></label>
           <div className="account-actions"><button type="submit" className="primary" disabled={accountBusy}>{accountBusy ? '保存中…' : '保存新密码'}</button></div>
         </form>}
-        {invite && <div className="account-invite">
-          <span>把邀请码发给 {invite.name}：</span>
-          <code>{invite.code}</code>
-          <button type="button" className="text-button" onClick={async () => { try { await navigator.clipboard.writeText(invite.code); notify('邀请码已复制'); } catch { notify('复制失败，请手动记下'); } }}>复制</button>
-          <small>24 小时内有效。对方在登录页点自己的名字，选择「首次设置」后输入。</small>
-        </div>}
       </div>
       <div className="setting-row owner-setting">
         <div className="setting-copy"><h3>记账归属</h3></div>
@@ -1137,7 +1144,6 @@ export default function Home() {
         })}</div>
       </div>
       <div className="setting-row"><div className="setting-copy"><h3>分类管理</h3></div><button className="outline-button" onClick={openCategories}>编辑分类</button></div>
-      <div className="setting-row"><div className="setting-copy"><h3>共享账本</h3></div><button className="outline-button share-button" onClick={() => openModal('share')}><LinkIcon size={15} />账本链接</button></div>
     </div>;
   }
   /* eslint-enable react-hooks/refs */
@@ -1157,7 +1163,7 @@ export default function Home() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar"><NextLink className="brand" href="/" onClick={() => goTo('today')} aria-label="两人账本首页"><span className="brand-icon"><BookHeart size={23} /></span><span>两人账本</span></NextLink><SlidingNav active={view} aria-label="主导航"><button aria-current={view === 'today' ? 'page' : undefined} className={view === 'today' ? 'active' : ''} onClick={() => goTo('today')}><Wallet size={19} />今天<span className="nav-dot" /></button><button aria-current={view === 'analysis' ? 'page' : undefined} className={view === 'analysis' ? 'active' : ''} onClick={() => goTo('analysis')}><BarChart3 size={19} />分析<span className="nav-dot" /></button><button aria-current={view === 'settings' ? 'page' : undefined} className={view === 'settings' ? 'active' : ''} onClick={() => goTo('settings')}><SlidersHorizontal size={19} />账本设置<span className="nav-dot" /></button></SlidingNav><div className="sidebar-bottom"><div className="sidebar-note"><Duo small /><p>生活的小事，<br />我们一起慢慢记。</p><span>EVERY LITTLE THING, TOGETHER.</span></div><button className="share-nav" onClick={() => openModal('share')}><Users size={18} />共享账本<ArrowUpRight size={15} /></button><div className="sidebar-foot"><span className="online-dot" />云端账本<span>人民币 CNY</span></div></div></aside>
+      <aside className="sidebar"><NextLink className="brand" href="/" onClick={() => goTo('today')} aria-label="两人账本首页"><span className="brand-icon"><BookHeart size={23} /></span><span>两人账本</span></NextLink><SlidingNav active={view} aria-label="主导航"><button aria-current={view === 'today' ? 'page' : undefined} className={view === 'today' ? 'active' : ''} onClick={() => goTo('today')}><Wallet size={19} />今天<span className="nav-dot" /></button><button aria-current={view === 'analysis' ? 'page' : undefined} className={view === 'analysis' ? 'active' : ''} onClick={() => goTo('analysis')}><BarChart3 size={19} />分析<span className="nav-dot" /></button><button aria-current={view === 'settings' ? 'page' : undefined} className={view === 'settings' ? 'active' : ''} onClick={() => goTo('settings')}><SlidersHorizontal size={19} />账本设置<span className="nav-dot" /></button></SlidingNav><div className="sidebar-bottom"><div className="sidebar-note"><Duo small /><p>生活的小事，<br />我们一起慢慢记。</p><span>EVERY LITTLE THING, TOGETHER.</span></div><div className="sidebar-foot"><span className="online-dot" />云端账本<span>人民币 CNY</span></div></div></aside>
       <main className="main"><header className="topbar"><span className="topbar-logo" role="img" aria-label="利通" title="利通"><Duo logo /></span><div className="topbar-meta"><span className="topbar-date">{dateLabel(data.today)}<em> · 星期{dayOfWeek(data.today)}</em></span><span className="topbar-savings" aria-label={`当前共同存款 ${money(balance)} 元`}><b className={balance >= 0 ? 'income' : 'expense'}>¥ {money(balance)}</b></span></div></header>
         <div className="content">{error && <div className="error-banner" role="alert">{hasLoaded ? `${error}，当前显示上次同步的账目。` : error}<button onClick={() => { setLoading(true); void refresh(); }}><RefreshCw size={14} />重试</button></div>}
           {view !== 'today' && <section className="page-heading page-heading-in" key={`heading-${view}`}><div><h1>{heading[view]}</h1></div></section>}
@@ -1170,7 +1176,29 @@ export default function Home() {
         </div>
       </main>
 
-      <dialog ref={dialogRef} aria-labelledby="entry-dialog-title" className={`modal${modalClosing ? ' is-closing' : ''}${entrySheet.dragging ? ' is-dragging' : ''}`} style={entrySheet.style} onCancel={(event) => { event.preventDefault(); if (!busy) closeModal(); }} onClick={(event) => { if (event.target === event.currentTarget && !busy) closeModal(); }}><div className="modal-inner"><span className="modal-grabber" aria-hidden="true" {...entrySheet.handleProps} /><div className="modal-head"><div><h2 id="entry-dialog-title" className={modal === 'categories' ? 'visually-hidden' : undefined}>{modal === 'entry' ? '记下这一笔' : modal === 'categories' ? '分类管理' : '两个人，一本账'}</h2></div><button className="icon-button" aria-label="关闭" disabled={busy} onClick={closeModal}><X size={21} /></button></div>{modal === 'share' ? <div className="share-content"><Duo /><h3>把生活，放在同一本账里</h3><p>通过网站的分享设置邀请另一半。</p><div className="share-link"><span>{typeof window !== 'undefined' ? window.location.origin : '账本链接'}</span><button className="outline-button" onClick={async () => { try { await navigator.clipboard.writeText(window.location.origin); notify('账本链接已复制'); } catch { notify('复制失败，请从浏览器地址栏复制链接'); } }}><LinkIcon size={15} />复制</button></div></div> : modal === 'categories' ? renderCategoryManager() : <form onSubmit={save}><>{modal === 'entry' && <Segmented className="type-tabs" active={entryType} role="group" aria-label="记账类型"><button type="button" aria-pressed={entryType === 'expense'} className={entryType === 'expense' ? 'selected' : ''} onClick={() => { setEntryType('expense'); if (!data.categories.expense.includes(entryCategory)) setEntryCategory(data.categories.expense[0] ?? ''); }}><JapaneseYen size={17} strokeWidth={2} />支出</button><button type="button" aria-pressed={entryType === 'income'} className={entryType === 'income' ? 'selected income-tab' : ''} onClick={() => { setEntryType('income'); if (!data.categories.income.includes(entryCategory)) setEntryCategory(data.categories.income[0] ?? ''); }}><MoneyBagIcon size={17} />收入</button></Segmented>}<label className="amount-field"><span>金额</span><div><b>¥</b><input aria-label="金额" inputMode="decimal" placeholder="0.00" value={amount} onChange={(event) => setAmount(event.target.value)} maxLength={12} required autoComplete="off" /></div></label><><label className="field-label">记在谁的名下 <span>*</span></label>{session && <small className="field-hint">已按登录身份「{ownerNameByKey.get(session.ownerKey) ?? session.name}」预选，可以改。</small>}<div className="owner-choices">{data.owners.map((item) => {
+      <dialog ref={dialogRef} aria-labelledby="entry-dialog-title" className={`modal${modalClosing ? ' is-closing' : ''}${entrySheet.dragging ? ' is-dragging' : ''}`} style={entrySheet.style} onCancel={(event) => { event.preventDefault(); if (!busy) closeModal(); }} onClick={(event) => { if (event.target === event.currentTarget && !busy) closeModal(); }}>
+        <div className="modal-inner">
+          <span className="modal-grabber" aria-hidden="true" {...entrySheet.handleProps} />
+          <div className="modal-head">
+            <div><h2 id="entry-dialog-title" className={modal === 'categories' ? 'visually-hidden' : undefined}>{modal === 'categories' ? '分类管理' : '记下这一笔'}</h2></div>
+            <button className="icon-button" aria-label="关闭" disabled={busy} onClick={closeModal}><X size={21} /></button>
+          </div>
+          {modal === 'categories' ? renderCategoryManager() : (
+            <form onSubmit={save}>
+              <Segmented className="type-tabs" active={entryType} role="group" aria-label="记账类型">
+                <button type="button" aria-pressed={entryType === 'expense'} className={entryType === 'expense' ? 'selected' : ''} onClick={() => { setEntryType('expense'); if (!data.categories.expense.includes(entryCategory)) setEntryCategory(data.categories.expense[0] ?? ''); }}><JapaneseYen size={17} strokeWidth={2} />支出</button>
+                <button type="button" aria-pressed={entryType === 'income'} className={entryType === 'income' ? 'selected income-tab' : ''} onClick={() => { setEntryType('income'); if (!data.categories.income.includes(entryCategory)) setEntryCategory(data.categories.income[0] ?? ''); }}><MoneyBagIcon size={17} />收入</button>
+              </Segmented>
+
+              <label className="amount-field"><span>金额</span><div><b>¥</b><input aria-label="金额" inputMode="decimal" placeholder="0.00" value={amount} onChange={(event) => setAmount(event.target.value)} maxLength={12} required autoComplete="off" /></div></label>
+
+              <span className="field-label">分类</span>
+              <div className="category-choices" role="group" aria-label="记账分类">{data.categories[entryType].map((item) => <button key={item} type="button" aria-pressed={entryCategory === item} className={entryCategory === item ? 'selected' : ''} onClick={() => setEntryCategory(item)}>{item}</button>)}</div>
+
+              <label className="form-field">备注<span className="optional">选填</span><input maxLength={100} placeholder="这一笔，是生活里的什么？" value={note} onChange={(event) => setNote(event.target.value)} /></label>
+
+              <span className="field-label">记在谁的名下</span>
+            <div className="owner-choices">{data.owners.map((item) => {
               const photo = photoForOwner(item.key);
               return <button key={item.key} type="button" aria-pressed={selectedOwner === item.key} className={`${ownerClass(item.key)}${selectedOwner === item.key ? ' selected' : ''}`} onClick={() => setSelectedOwner(item.key)}>
                 <span className={`owner-choice-avatar ${ownerClass(item.key)}${photo ? ' has-photo' : ''}`}>
@@ -1179,7 +1207,19 @@ export default function Home() {
                 </span>
                 <span className="owner-choice-name">{item.name}</span>
               </button>;
-            })}</div><label className="field-label">分类 <span>*</span></label><div className="category-choices" role="group" aria-label="记账分类">{data.categories[entryType].map((item) => <button key={item} type="button" aria-pressed={entryCategory === item} className={entryCategory === item ? 'selected' : ''} onClick={() => setEntryCategory(item)}>{item}</button>)}</div>{<div className="form-field entry-photo-field"><span>照片<span className="optional">选填，最多 {MAX_ENTRY_IMAGES} 张</span></span><PhotoPicker photos={entryPhotos} onChange={setEntryPhotos} max={MAX_ENTRY_IMAGES} disabled={busy} onReject={notify} /></div>}<div className="form-field"><span>发生日期</span><DatePicker value={date} max={ledger.today} onChange={pickEntryDate} /></div><div className="form-field"><span>发生时间</span><TimePicker value={entryTime} max={date === ledger.today ? chinaTime() : undefined} onChange={setEntryTime} /></div><label className="form-field">备注<span className="optional">选填</span><input maxLength={100} placeholder="这一笔，是生活里的什么？" value={note} onChange={(event) => setNote(event.target.value)} /></label></>{formError && <p className="form-error" role="alert">{formError}</p>}<div className="modal-actions"><button className="primary" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Check size={18} />} {busy ? '保存中…' : '保存'}</button></div></></form>}</div></dialog>
+            })}</div>
+
+              <div className="form-field"><span>发生日期</span><DatePicker value={date} max={ledger.today} onChange={pickEntryDate} /></div>
+              <div className="form-field"><span>发生时间</span><TimePicker value={entryTime} max={date === ledger.today ? chinaTime() : undefined} onChange={setEntryTime} /></div>
+
+              <div className="form-field entry-photo-field"><span>照片<span className="optional">选填，最多 {MAX_ENTRY_IMAGES} 张</span></span><PhotoPicker photos={entryPhotos} onChange={setEntryPhotos} max={MAX_ENTRY_IMAGES} disabled={busy} onReject={notify} /></div>
+
+              {formError && <p className="form-error" role="alert">{formError}</p>}
+              <div className="modal-actions"><button className="primary" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Check size={18} />} {busy ? '保存中…' : '保存'}</button></div>
+            </form>
+          )}
+        </div>
+      </dialog>
 
       {toast && <div className={`toast${toastLeaving ? ' leaving' : ''}`} role="status"><Check size={17} />{toast}</div>}
     </div>

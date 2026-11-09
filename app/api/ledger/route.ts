@@ -2,12 +2,9 @@ import { env } from 'cloudflare:workers';
 import { chinaStamp, chinaTime, chinaToday, expenseCategories, incomeCategories, ownerKeys, validateEntry, type OwnerKey } from '@/lib/ledger';
 import {
   IMAGE_LIMITS,
-  MAX_COMMENT_IMAGES,
   MAX_ENTRY_IMAGES,
   MediaError,
   isValidId,
-  normalizeCommentBody,
-  type CommentRecord,
   type MediaLimits,
   type MediaMeta,
 } from '@/lib/media';
@@ -20,7 +17,6 @@ type EntryRow={id:string;type:string;amount:number;owner:string;created_by?:stri
 type AvatarRow={owner:string;data:string};
 type CategoryRow={type:string;name:string;position:number};
 type OwnerRow={key:string;name:string;position:number};
-type CommentRow={id:string;entry_id:string;parent_id:string|null;reply_to_owner:string|null;body:string;created_by:string;created_at:string};
 type MediaRow={id:string;entry_id:string|null;comment_id:string|null;width:number;height:number;bytes:number;thumb_bytes:number;created_at:string};
 
 const DEFAULT_OWNERS:{key:OwnerKey;name:string}[]=[
@@ -92,10 +88,10 @@ async function readOwners(database:D1Database):Promise<{key:OwnerKey;name:string
 
 function mediaLimits():MediaLimits{
  const mode=storageMode();
- return {...IMAGE_LIMITS[mode],mode,maxPerEntry:MAX_ENTRY_IMAGES,maxPerComment:MAX_COMMENT_IMAGES};
+ return {...IMAGE_LIMITS[mode],mode,maxPerEntry:MAX_ENTRY_IMAGES};
 }
 
-async function read(viewer:OwnerKey){
+async function read(){
  const database=db();
  const [rows,categories,ownerList]=await Promise.all([
   database.prepare('SELECT * FROM entries ORDER BY date DESC, created_at DESC, id DESC').all(),
@@ -107,41 +103,18 @@ async function read(viewer:OwnerKey){
   const avatarRows=await database.prepare('SELECT owner, data FROM avatars').all();
   (avatarRows.results as AvatarRow[]).forEach((a)=>{if(a.owner&&a.data)avatars[resolveOwnerKey(a.owner,ownerList)]=a.data;});
  }catch{}
- // 迁移尚未执行时不让整本账失败：图片/评论退化为空。
- let commentRows:CommentRow[]=[];
+ // 评论已下线：只读记录图片。历史评论图（entry_id 为空）不再返回给前端。
  let mediaRows:MediaRow[]=[];
- let likeRows:{comment_id:string;owner_key:string}[]=[];
  try{
-  const [comments,media,likes]=await Promise.all([
-   database.prepare('SELECT id, entry_id, parent_id, reply_to_owner, body, created_by, created_at FROM comments ORDER BY created_at, id').all<CommentRow>(),
-   database.prepare('SELECT id, entry_id, comment_id, width, height, bytes, thumb_bytes, created_at FROM media ORDER BY created_at, id').all<MediaRow>(),
-   database.prepare('SELECT comment_id, owner_key FROM comment_likes').all<{comment_id:string;owner_key:string}>().catch(()=>({results:[] as {comment_id:string;owner_key:string}[]})),
-  ]);
-  commentRows=comments.results;mediaRows=media.results;likeRows=likes.results;
+  const media=await database.prepare('SELECT id, entry_id, comment_id, width, height, bytes, thumb_bytes, created_at FROM media ORDER BY created_at, id').all<MediaRow>();
+  mediaRows=media.results;
  }catch{}
  const mediaByEntry=new Map<string,MediaMeta[]>();
- const mediaByComment=new Map<string,MediaMeta[]>();
  mediaRows.forEach((row)=>{
+  if(!row.entry_id)return;
   const meta:MediaMeta={id:row.id,width:Number(row.width),height:Number(row.height),bytes:Number(row.bytes),thumbBytes:Number(row.thumb_bytes)};
-  const grouped=row.entry_id?mediaByEntry:row.comment_id?mediaByComment:null;
-  const key=row.entry_id??row.comment_id;
-  if(!grouped||!key)return;
-  grouped.set(key,[...(grouped.get(key)??[]),meta]);
+  mediaByEntry.set(row.entry_id,[...(mediaByEntry.get(row.entry_id)??[]),meta]);
  });
- const likesByComment=new Map<string,{count:number;mine:boolean}>();
- likeRows.forEach((like)=>{
-  const current=likesByComment.get(like.comment_id)??{count:0,mine:false};
-  current.count+=1;
-  if(like.owner_key===viewer)current.mine=true;
-  likesByComment.set(like.comment_id,current);
- });
- const comments:CommentRecord[]=commentRows.map((row)=>({
-  id:row.id,entryId:row.entry_id,parentId:row.parent_id,replyToOwner:row.reply_to_owner?resolveOwnerKey(row.reply_to_owner,ownerList):null,
-  body:row.body,createdBy:resolveOwnerKey(row.created_by,ownerList),createdAt:row.created_at,
-  images:mediaByComment.get(row.id)??[],
-  likeCount:likesByComment.get(row.id)?.count??0,
-  likedByMe:likesByComment.get(row.id)?.mine??false,
- }));
  const ownerNameByKey=new Map(ownerList.map((owner)=>[owner.key,owner.name]));
  return {
   entries:(rows.results as EntryRow[]).map((r)=>{
@@ -152,7 +125,6 @@ async function read(viewer:OwnerKey){
    const stamp=r.time?null:chinaStamp(r.created_at);
    return {...r,owner:ownerNameByKey.get(ownerKey)??r.owner,ownerKey,createdBy,category:r.category||'其他',time:r.time||stamp?.time||'',createdAt:r.created_at,images:mediaByEntry.get(r.id)??[]};
   }),
-  comments,
   mediaLimits:mediaLimits(),
   today:chinaToday(),
   avatars,
@@ -185,7 +157,7 @@ export async function GET(request:Request){
  const session=await readSession(request);
  if(!session)return fail('UNAUTHORIZED','请先登录',401);
  try{
-  const result=await read(session.ownerKey);
+  const result=await read();
   try{await drainDeletionsThrottled(db());}catch{}
   return reply(result,200,session.cookie);
  }
@@ -224,43 +196,6 @@ export async function POST(request:Request){
     const r=await database.prepare('UPDATE entries SET type=?,amount=?,owner=?,date=?,time=CASE WHEN ? THEN time ELSE ? END,note=?,category=?,revision=revision+1 WHERE id=? AND revision=?').bind(v.type,v.amount,v.ownerKey,v.date,keepTime?1:0,v.time,v.note,v.category,id,revision).run();
     if(!r.meta.changes)return fail('REVISION_CONFLICT','记录已被更新或删除，请刷新后重试',409);
    }
-  }else if(b.action==='comment-add'){
-   const comment=b.comment;
-   if(!comment||!isValidId(comment.id)||!isValidId(comment.entryId))return fail('COMMENT_INVALID','评论内容无效',400);
-   const body=normalizeCommentBody(comment.body);
-   const entry=await database.prepare('SELECT 1 AS found FROM entries WHERE id=?').bind(comment.entryId).first<{found:number}>();
-   if(!entry)return fail('ENTRY_NOT_FOUND','记录不存在或已删除',404);
-   // 只允许两级：回复统一挂到根评论上，并记住被回复的人。
-   let parentId:string|null=null;
-   let replyToOwner:string|null=null;
-   if(comment.parentId!==undefined&&comment.parentId!==null){
-    if(!isValidId(comment.parentId))return fail('COMMENT_INVALID','回复的评论无效',400);
-    const parent=await database.prepare('SELECT id, entry_id, parent_id, created_by FROM comments WHERE id=?').bind(comment.parentId).first<{id:string;entry_id:string;parent_id:string|null;created_by:string}>();
-    if(!parent||parent.entry_id!==comment.entryId)return fail('COMMENT_NOT_FOUND','回复的评论不存在或已删除',404);
-    parentId=parent.parent_id??parent.id;
-    replyToOwner=parent.created_by;
-   }
-   await database.prepare('INSERT INTO comments (id,entry_id,parent_id,reply_to_owner,body,created_by,created_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING').bind(comment.id,comment.entryId,parentId,replyToOwner,body,session.ownerKey,new Date().toISOString()).run();
-  }else if(b.action==='comment-like'){
-   if(!isValidId(b.id))return fail('COMMENT_INVALID','评论无效',400);
-   const comment=await database.prepare('SELECT id FROM comments WHERE id=?').bind(b.id).first<{id:string}>();
-   if(!comment)return fail('COMMENT_NOT_FOUND','评论不存在或已删除',404);
-   const liked=await database.prepare('SELECT 1 AS found FROM comment_likes WHERE comment_id=? AND owner_key=?').bind(b.id,session.ownerKey).first<{found:number}>();
-   if(liked){
-    await database.prepare('DELETE FROM comment_likes WHERE comment_id=? AND owner_key=?').bind(b.id,session.ownerKey).run();
-   }else{
-    await database.prepare('INSERT OR IGNORE INTO comment_likes (comment_id,owner_key,created_at) VALUES (?,?,?)').bind(b.id,session.ownerKey,new Date().toISOString()).run();
-   }
-  }else if(b.action==='comment-delete'){
-   if(!isValidId(b.id))return fail('COMMENT_INVALID','评论无效',400);
-   // 删评论会带走它的回复、点赞和图片；对象清单要在删行之前读出来。
-   const rows=await database.prepare('SELECT id, storage FROM media WHERE comment_id=? OR comment_id IN (SELECT id FROM comments WHERE parent_id=?)').bind(b.id,b.id).all<{id:string;storage:string}>();
-   const statements:D1PreparedStatement[]=[
-    database.prepare('DELETE FROM media WHERE comment_id=? OR comment_id IN (SELECT id FROM comments WHERE parent_id=?)').bind(b.id,b.id),
-    database.prepare('DELETE FROM comments WHERE id=?').bind(b.id),
-    ...mediaCleanupStatements(database,rows.results),
-   ];
-   await database.batch(statements);
   }else if(b.action==='delete'){
    if(!isValidId(b.id)||!Number.isInteger(b.revision))return fail('ENTRY_INVALID','记录无效',400);
    const current=await database.prepare('SELECT revision FROM entries WHERE id=?').bind(b.id).first<{revision:number}>();
@@ -342,7 +277,7 @@ export async function POST(request:Request){
    }
   }else return fail('UNSUPPORTED','不支持的操作',400);
 
-  const result=await read(session.ownerKey);
+  const result=await read();
   try{await drainDeletionsThrottled(database);}catch{}
   return reply(result,200,session.cookie);
  }catch(e){

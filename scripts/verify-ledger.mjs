@@ -146,11 +146,6 @@ assert.equal(auth.readCookie('a=1; tl_session=xyz; b=2', 'tl_session'), 'xyz');
 assert.equal(auth.readCookie('a=1', 'tl_session'), null);
 assert.equal(auth.readCookie(null, 'tl_session'), null);
 
-assert.equal(auth.normalizeInviteCode(' ab-12 cd '), 'AB12CD');
-assert.equal(auth.normalizeInviteCode(undefined), '');
-const invite = auth.createInviteCode();
-assert.equal(invite.length, 6);
-assert.match(invite, /^[2-9A-HJ-NP-Z]{6}$/);
 assert.equal(await auth.sha256Hex('abc'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
 assert.equal(auth.isSecureRequest(new Request('https://example.com/api/auth')), true);
 assert.equal(auth.isSecureRequest(new Request('http://127.0.0.1:3000/api/auth')), false);
@@ -181,19 +176,10 @@ assert.equal(media.isValidId('../etc/passwd'), false);
 assert.equal(media.isValidId('abc$def'), false);
 assert.equal(media.isValidId(42), false);
 
-assert.equal(media.normalizeCommentBody(' 你好 '), '你好');
-assert.equal(media.normalizeCommentBody('a'.repeat(300)), 'a'.repeat(300));
-assert.equal([...media.normalizeCommentBody('😀'.repeat(300))].length, 300);
-assert.throws(() => media.normalizeCommentBody(''), (error) => error instanceof media.MediaError && error.code === 'COMMENT_INVALID');
-assert.throws(() => media.normalizeCommentBody('   '), (error) => error.code === 'COMMENT_INVALID');
-assert.throws(() => media.normalizeCommentBody('a'.repeat(301)), (error) => error.code === 'COMMENT_INVALID');
-assert.throws(() => media.normalizeCommentBody('😀'.repeat(301)), (error) => error.code === 'COMMENT_INVALID');
-assert.throws(() => media.normalizeCommentBody(42), (error) => error.code === 'COMMENT_INVALID');
-
 const statuses = {
  IMAGE_LIMIT:400, IMAGE_INVALID:400, IMAGE_TOO_LARGE:413, IMAGE_UNSUPPORTED:415, IMAGE_CONFLICT:409,
  TARGET_NOT_FOUND:404, ENTRY_NOT_FOUND:404, REVISION_CONFLICT:409, ENTRY_CONFLICT:409,
- COMMENT_INVALID:400, MEDIA_UNAVAILABLE:503,
+ MEDIA_UNAVAILABLE:503,
 };
 for (const [code, status] of Object.entries(statuses)) assert.equal(media.mediaErrorStatus(code), status, code);
 const conflict = media.mediaError('IMAGE_CONFLICT', '重复');
@@ -203,13 +189,11 @@ assert.equal(conflict.message, '重复');
 assert.equal(media.mediaObjectKey('abc', 'full'), 'media/abc/original');
 assert.equal(media.mediaObjectKey('abc', 'thumb'), 'media/abc/thumb');
 assert.equal(media.MAX_ENTRY_IMAGES, 9);
-assert.equal(media.MAX_COMMENT_IMAGES, 3);
-assert.equal(media.MAX_COMMENT_LENGTH, 300);
 assert.deepEqual(media.MIME_TYPES, ['image/jpeg', 'image/png', 'image/webp']);
 assert.deepEqual(media.IMAGE_LIMITS.r2, {maxBytes:2000000, maxThumbBytes:300000});
 assert.deepEqual(media.IMAGE_LIMITS.d1, {maxBytes:700000, maxThumbBytes:120000});
 
 console.log('PASS: 金额精度、北京时间跨月、累计余额、归属去重、编辑删除重算、期初存款隔离、北京时间时间戳与时间校验、按发生时刻排序、按天汇总/当天归属拆分(含零值补齐)/组合筛选/排序、收支分类校验/筛选、整数分精度、非法输入验证');
-console.log('PASS: 登录密码派生/校验、会话过期与滑动续期、长期 Cookie 属性、邀请码生成与规范化、Cookie 解析、HTTPS 判定');
-console.log('PASS: 图片魔数识别、缩略图 JPEG 校验、评论正文码点长度、媒体 id 白名单、错误码状态映射、对象 key');
+console.log('PASS: 登录密码派生/校验、会话过期与滑动续期、长期 Cookie 属性、Cookie 解析、HTTPS 判定');
+console.log('PASS: 图片魔数识别、缩略图 JPEG 校验、媒体 id 白名单、错误码状态映射、对象 key');
 

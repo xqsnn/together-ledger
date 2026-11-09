@@ -1,29 +1,40 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ArrowLeft, Check, ImagePlus, LoaderCircle, MoreHorizontal, Pencil, Trash2, UserRound, Users } from 'lucide-react';
+import { ArrowLeft, Check, ImagePlus, LoaderCircle, Pencil, RotateCcw, Trash2, UserRound, Users, X } from 'lucide-react';
 import { MoneyBagIcon } from '@/components/money-bag-icon';
-import PhotoCarousel from '@/components/photo-carousel';
+import PhotoGrid from '@/components/photo-grid';
 import PhotoViewer from '@/components/photo-viewer';
-import EntryComments, { type UploadTask } from '@/components/entry-comments';
 import LoginScreen, { type AuthSession } from '@/components/login-screen';
-import { prepareImage, uploadMedia } from '@/lib/image-client';
-import { takePendingPhotos } from '@/lib/pending-uploads';
-import type { CommentRecord, MediaLimits, MediaMeta } from '@/lib/media';
-import type { Entry, OwnerKey } from '@/lib/ledger';
+import { DatePicker } from '@/components/date-picker';
+import { TimePicker } from '@/components/time-picker';
+import { Segmented } from '@/components/segmented';
+import {
+  dismissTask,
+  enqueuePhotos,
+  getServerSnapshot,
+  getSnapshot,
+  mergeUploadedMedia,
+  onMediaUploaded,
+  retryTask,
+  setUploadLimits,
+  subscribe,
+  type UploadTask,
+} from '@/lib/upload-queue';
+import { chinaTime, toCents, type Entry, type OwnerKey } from '@/lib/ledger';
+import type { MediaLimits, MediaMeta } from '@/lib/media';
 
 type LedgerEntry = Entry & { images: MediaMeta[] };
 type Ledger = {
   entries: LedgerEntry[];
-  comments: CommentRecord[];
   mediaLimits: MediaLimits;
   today: string;
   avatars: Partial<Record<OwnerKey, string>>;
+  categories: { expense: string[]; income: string[] };
   owners: { key: OwnerKey; name: string }[];
 };
 
-const DEFAULT_LIMITS: MediaLimits = { mode: 'd1', maxBytes: 700000, maxThumbBytes: 120000, maxPerEntry: 9, maxPerComment: 3 };
 const money = (n: number) => (n / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const ownerClass = (key: string) => (key === 'qing' ? 'qing' : key === 'hua' ? 'hua' : 'together');
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
@@ -47,18 +58,26 @@ export default function EntryPage() {
   const [ledger, setLedger] = useState<Ledger | null>(null);
   const [error, setError] = useState('');
   const [viewer, setViewer] = useState<{ photos: MediaMeta[]; index: number } | null>(null);
-  const [uploads, setUploads] = useState<UploadTask[]>([]);
   const [deleting, setDeleting] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [toast, setToast] = useState('');
-  const uploadsRef = useRef<UploadTask[]>([]);
-  const uploadRunning = useRef(false);
-  const limitsRef = useRef<MediaLimits>(DEFAULT_LIMITS);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const photoInput = useRef<HTMLInputElement>(null);
   const deleteRef = useRef<HTMLDialogElement>(null);
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const startedRef = useRef(false);
+
+  // 编辑态（原来独立的 /entries/[id]/edit 页，现在并在这一页里）
+  const [editing, setEditing] = useState(false);
+  const [editType, setEditType] = useState<Entry['type']>('expense');
+  const [editCategory, setEditCategory] = useState('');
+  const [editAmount, setEditAmount] = useState('');
+  const [editOwner, setEditOwner] = useState<OwnerKey | null>(null);
+  const [editDate, setEditDate] = useState('');
+  const [editTime, setEditTime] = useState('');
+  const [editNote, setEditNote] = useState('');
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState('');
+
+  const uploads = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
   const notify = (message: string) => {
     setToast(message);
@@ -76,9 +95,12 @@ export default function EntryPage() {
     const result = (await response.json()) as Ledger & { error?: string };
     if (!response.ok) throw new Error(result.error || '加载失败');
     if (signal?.aborted) return;
-    setLedger(result);
+    setUploadLimits(result.mediaLimits);
+    setLedger({
+      ...result,
+      entries: result.entries.map((entry) => mergeUploadedMedia(entry.id, entry)),
+    });
     setError('');
-    limitsRef.current = result.mediaLimits ?? DEFAULT_LIMITS;
   }, []);
 
   useEffect(() => {
@@ -101,148 +123,78 @@ export default function EntryPage() {
     return () => controller.abort();
   }, [load]);
 
+  // 上传完成 → 并进当前这份 ledger（否则要等下一次轮询才看得到）。
+  useEffect(() => onMediaUploaded((targetId, media) => {
+    setLedger((current) => current ? {
+      ...current,
+      entries: current.entries.map((item) => item.id === targetId && !item.images.some((photo) => photo.id === media.id)
+        ? { ...item, images: [...item.images, media] }
+        : item),
+    } : current);
+  }), []);
+
   useEffect(() => () => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    uploadsRef.current.forEach((item) => URL.revokeObjectURL(item.preview));
   }, []);
 
   const entry = ledger?.entries.find((item) => item.id === entryId) ?? null;
-  const comments = ledger ? ledger.comments.filter((comment) => comment.entryId === entryId) : [];
+  const entryUploads = uploads.filter((item) => item.entryId === entryId);
 
-  function updateUploads(updater: (items: UploadTask[]) => UploadTask[]) {
-    const next = updater(uploadsRef.current);
-    uploadsRef.current = next;
-    setUploads(next);
-  }
+  const startEditing = () => {
+    if (!entry) return;
+    setEditType(entry.type);
+    setEditCategory(entry.category);
+    setEditAmount((entry.amount / 100).toFixed(2));
+    setEditOwner(entry.ownerKey);
+    setEditDate(entry.date);
+    setEditTime(entry.time || (entry.date === ledger?.today ? chinaTime() : '12:00'));
+    setEditNote(entry.note);
+    setEditError('');
+    setEditing(true);
+  };
 
-  function patchUpload(key: string, patch: Partial<UploadTask>) {
-    updateUploads((items) => items.map((item) => (item.key === key ? { ...item, ...patch } : item)));
-  }
+  const cancelEditing = () => {
+    setEditing(false);
+    setEditError('');
+  };
 
-  function mergeMedia(target: { entryId: string; commentId?: string }, media: MediaMeta) {
-    setLedger((current) => {
-      if (!current) return current;
-      if (target.commentId) {
-        return {
-          ...current,
-          comments: current.comments.map((comment) => comment.id === target.commentId && !comment.images.some((item) => item.id === media.id)
-            ? { ...comment, images: [...comment.images, media] }
-            : comment),
-        };
-      }
-      return {
-        ...current,
-        entries: current.entries.map((item) => item.id === target.entryId && !item.images.some((photo) => photo.id === media.id)
-          ? { ...item, images: [...item.images, media] }
-          : item),
-      };
-    });
-  }
-
-  async function processUpload(item: UploadTask) {
-    patchUpload(item.key, { status: 'preparing', progress: 2 });
+  async function saveEdit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!entry || editBusy) return;
+    setEditError('');
+    setEditBusy(true);
     try {
-      const prepared = await prepareImage(item.file, limitsRef.current);
-      patchUpload(item.key, { status: 'uploading', progress: 4 });
-      const media = await uploadMedia({
-        id: item.mediaId,
-        target: item.commentId ? 'comment' : 'entry',
-        targetId: item.commentId ?? item.entryId,
-        full: prepared.full,
-        thumb: prepared.thumb,
-        width: prepared.width,
-        height: prepared.height,
-      }, (progress) => patchUpload(item.key, { progress: Math.max(4, progress) }));
-      mergeMedia({ entryId: item.entryId, commentId: item.commentId }, media);
-      patchUpload(item.key, { status: 'done', progress: 100 });
-      setTimeout(() => {
-        updateUploads((items) => items.filter((current) => current.key !== item.key));
-        URL.revokeObjectURL(item.preview);
-      }, 500);
+      if (!editOwner) throw new Error('请选择这笔账的归属');
+      const response = await fetch('/api/ledger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'save',
+          mode: 'update',
+          entry: {
+            id: entry.id,
+            revision: entry.revision,
+            type: editType,
+            amount: toCents(editAmount),
+            ownerKey: editOwner,
+            date: editDate,
+            time: editTime,
+            note: editNote,
+            category: editCategory,
+          },
+        }),
+      });
+      const result = (await response.json()) as Ledger & { error?: string };
+      if (!response.ok) throw new Error(result.error || '保存失败');
+      setLedger(result);
+      setUploadLimits(result.mediaLimits);
+      setEditing(false);
+      notify('已更新');
     } catch (caught) {
-      patchUpload(item.key, { status: 'error', error: caught instanceof Error ? caught.message : '上传失败' });
-    }
-  }
-
-  async function runQueue() {
-    if (uploadRunning.current) return;
-    uploadRunning.current = true;
-    try {
-      for (;;) {
-        const pending = uploadsRef.current.filter((item) => item.status === 'pending');
-        if (!pending.length) break;
-        await processUpload(pending[0]);
-      }
+      setEditError(caught instanceof Error ? caught.message : '保存失败');
     } finally {
-      uploadRunning.current = false;
+      setEditBusy(false);
     }
-  }
-
-  function enqueueEntryPhotos(files: File[]) {
-    if (!files.length) return;
-    const pending = uploadsRef.current.filter((item) => !item.commentId && item.status !== 'error').length;
-    const room = Math.max(0, limitsRef.current.maxPerEntry - (entry?.images.length ?? 0) - pending);
-    if (files.length > room) notify(`每条记录最多 ${limitsRef.current.maxPerEntry} 张图片`);
-    if (!room) return;
-    const added: UploadTask[] = files.slice(0, room).map((file) => ({
-      key: crypto.randomUUID(),
-      mediaId: crypto.randomUUID(),
-      entryId,
-      file,
-      preview: URL.createObjectURL(file),
-      status: 'pending',
-      progress: 0,
-    }));
-    updateUploads((items) => [...items, ...added]);
-    void runQueue();
-  }
-
-  // 新建记录时暂存的图片，进入详情页后自动续传。
-  useEffect(() => {
-    if (!entry || startedRef.current) return;
-    startedRef.current = true;
-    const files = takePendingPhotos(entry.id);
-    if (files.length) enqueueEntryPhotos(files);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entry]);
-
-  async function mutate(body: Record<string, unknown>) {
-    const response = await fetch('/api/ledger', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const result = (await response.json()) as Ledger & { error?: string };
-    if (!response.ok) throw new Error(result.error || '操作失败');
-    setLedger(result);
-    limitsRef.current = result.mediaLimits ?? DEFAULT_LIMITS;
-    return result;
-  }
-
-  async function addComment(input: { id: string; entryId: string; parentId?: string; body: string }, files: File[]) {
-    await mutate({ action: 'comment-add', comment: input });
-    if (files.length) {
-      const added: UploadTask[] = files.map((file) => ({
-        key: crypto.randomUUID(),
-        mediaId: crypto.randomUUID(),
-        entryId,
-        commentId: input.id,
-        file,
-        preview: URL.createObjectURL(file),
-        status: 'pending',
-        progress: 0,
-      }));
-      updateUploads((items) => [...items, ...added]);
-      void runQueue();
-    }
-  }
-
-  async function likeComment(id: string) {
-    await mutate({ action: 'comment-like', id });
-  }
-
-  async function deleteComment(id: string) {
-    await mutate({ action: 'comment-delete', id });
   }
 
   async function deletePhoto(mediaId: string) {
@@ -259,7 +211,13 @@ export default function EntryPage() {
     if (!entry || deleteBusy) return;
     setDeleteBusy(true);
     try {
-      await mutate({ action: 'delete', id: entry.id, revision: entry.revision });
+      const response = await fetch('/api/ledger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete', id: entry.id, revision: entry.revision }),
+      });
+      const result = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(result.error || '删除失败');
       router.replace('/');
     } catch (caught) {
       setDeleteBusy(false);
@@ -289,132 +247,138 @@ export default function EntryPage() {
   }
 
   const ownerNames: Record<string, string> = Object.fromEntries((ledger?.owners ?? []).map((item) => [item.key, item.name]));
-  const authorKey = (entry?.createdBy ?? entry?.ownerKey ?? 'together') as OwnerKey;
-  const entryUploads = uploads.filter((item) => !item.commentId && item.status !== 'done');
-  const pendingEntry = entryUploads.filter((item) => item.status !== 'error').length;
-  const remaining = Math.max(0, (ledger?.mediaLimits ?? DEFAULT_LIMITS).maxPerEntry - (entry?.images.length ?? 0) - pendingEntry);
+  const avatar = ledger?.avatars?.[entry?.ownerKey ?? 'together'];
+  const categoryList = ledger?.categories[editType] ?? [];
+  const remaining = Math.max(0, (ledger?.mediaLimits?.maxPerEntry ?? 9) - (entry?.images.length ?? 0) - entryUploads.filter((task) => task.status !== 'error').length);
+  // 代记：只有「谁记的」和「记在谁名下」不是同一人时才值得显示。
+  const proxyAuthor = entry?.createdBy && entry.createdBy !== entry.ownerKey ? ownerNames[entry.createdBy] ?? entry.createdBy : '';
 
   return (
     <div className="entry-page">
       <header className="entry-page-bar">
         <button type="button" className="entry-back" aria-label="返回" onClick={goBack}><ArrowLeft size={20} /></button>
-        <h1>记录详情</h1>
-        <div className="entry-page-actions entry-menu-wrap">
-          <button type="button" className="entry-more" aria-label="更多操作" aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>
-            <MoreHorizontal size={19} />
-          </button>
-          {menuOpen && (
+        <h1>{editing ? '编辑这一笔' : '这一笔'}</h1>
+        <div className="entry-page-actions">
+          {entry && !editing && (
             <>
-              <button type="button" className="entry-menu-backdrop" aria-label="关闭菜单" onClick={() => setMenuOpen(false)} />
-              <div className="entry-menu" role="menu">
-                <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); router.push(`/entries/${entryId}/edit`); }}>
-                  <Pencil size={15} />编辑
-                </button>
-                <button type="button" role="menuitem" className="danger" onClick={() => { setMenuOpen(false); setDeleting(true); }}>
-                  <Trash2 size={15} />删除
-                </button>
-              </div>
+              <button type="button" aria-label="编辑" onClick={startEditing}><Pencil size={18} /></button>
+              <button type="button" aria-label="删除" onClick={() => setDeleting(true)}><Trash2 size={18} /></button>
             </>
           )}
         </div>
       </header>
 
-      {!entry ? (
-        <main className="entry-page-main">
+      <main className="entry-page-main">
+        {!ledger ? (
+          <div className="empty panel" role="status">
+            <LoaderCircle className="spin" size={24} />
+            <h2>{error || '正在加载这一笔…'}</h2>
+            {error && <button type="button" className="outline-button" onClick={() => { setError(''); void load(); }}>重试</button>}
+          </div>
+        ) : !entry ? (
           <div className="empty panel">
             <h2>{error || '记录不存在'}</h2>
             <p>它可能已经被删除了。</p>
             <button type="button" className="outline-button" onClick={() => router.push('/')}>回到账本</button>
           </div>
-        </main>
-      ) : (
-        <main className="entry-page-main">
-          <section className="entry-gallery" aria-label="记录图片">
-            <input
-              ref={photoInput}
-              type="file"
-              accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
-              multiple
-              hidden
-              onChange={(event) => {
-                const files = Array.from(event.target.files ?? []);
-                event.target.value = '';
-                enqueueEntryPhotos(files);
-              }}
-            />
-            {entry.images.length > 0 ? (
-              <PhotoCarousel photos={entry.images} onOpen={(index) => setViewer({ photos: entry.images, index })} />
-            ) : (
-              <button type="button" className="gallery-empty" onClick={() => photoInput.current?.click()} disabled={remaining <= 0}>
-                <ImagePlus size={22} aria-hidden="true" />
-                <span>{remaining > 0 ? '添加照片' : '图片已达上限'}</span>
-              </button>
-            )}
-            {entryUploads.length > 0 && (
-              <div className="gallery-uploads">
-                {entryUploads.map((item) => (
-                  <div className={`gallery-upload${item.status === 'error' ? ' is-error' : ''}`} key={item.key}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={item.preview} alt="" draggable={false} />
-                    <span className="gallery-upload-label">
-                      {item.status === 'error' ? '失败' : <><LoaderCircle className="spin" size={11} />{item.progress}%</>}
+        ) : editing ? (
+          <form className="entry-edit-form panel" onSubmit={saveEdit}>
+            <Segmented className="type-tabs" active={editType} role="group" aria-label="记账类型">
+              <button type="button" aria-pressed={editType === 'expense'} className={editType === 'expense' ? 'selected' : ''} onClick={() => { setEditType('expense'); if (!(ledger.categories.expense.includes(editCategory))) setEditCategory(ledger.categories.expense[0] ?? ''); }}>支出</button>
+              <button type="button" aria-pressed={editType === 'income'} className={editType === 'income' ? 'selected income-tab' : ''} onClick={() => { setEditType('income'); if (!(ledger.categories.income.includes(editCategory))) setEditCategory(ledger.categories.income[0] ?? ''); }}>收入</button>
+            </Segmented>
+
+            <label className="amount-field">
+              <span>金额</span>
+              <div><b>¥</b><input aria-label="金额" inputMode="decimal" placeholder="0.00" value={editAmount} onChange={(event) => setEditAmount(event.target.value)} maxLength={12} required autoComplete="off" /></div>
+            </label>
+
+            <span className="field-label">分类</span>
+            <div className="category-choices" role="group" aria-label="记账分类">
+              {categoryList.map((item) => <button key={item} type="button" aria-pressed={editCategory === item} className={editCategory === item ? 'selected' : ''} onClick={() => setEditCategory(item)}>{item}</button>)}
+            </div>
+
+            <label className="form-field">备注<span className="optional">选填</span><input maxLength={100} placeholder="这一笔，是生活里的什么？" value={editNote} onChange={(event) => setEditNote(event.target.value)} /></label>
+
+            <span className="field-label">记在谁的名下</span>
+            <div className="owner-choices">
+              {ledger.owners.map((item) => {
+                const photo = ledger.avatars?.[item.key] ?? (item.key === 'hua' ? '/huang.jpg' : '');
+                return (
+                  <button key={item.key} type="button" aria-pressed={editOwner === item.key} className={`${ownerClass(item.key)}${editOwner === item.key ? ' selected' : ''}`} onClick={() => setEditOwner(item.key)}>
+                    <span className={`owner-choice-avatar ${ownerClass(item.key)}${photo ? ' has-photo' : ''}`}>
+                      {photo ? <span className="owner-choice-photo" style={{ backgroundImage: `url(${photo})` }} aria-hidden="true" /> : item.key === 'together' ? <Users size={19} aria-hidden="true" /> : <span className="owner-choice-initial">{item.name.slice(0, 1)}</span>}
+                      <span className="owner-choice-check" aria-hidden="true"><Check size={10} strokeWidth={3} /></span>
                     </span>
-                  </div>
-                ))}
+                    <span className="owner-choice-name">{item.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="form-field"><span>发生日期</span><DatePicker value={editDate} max={ledger.today} onChange={setEditDate} /></div>
+            <div className="form-field"><span>发生时间</span><TimePicker value={editTime} max={editDate === ledger.today ? chinaTime() : undefined} onChange={setEditTime} /></div>
+
+            {editError && <p className="form-error" role="alert">{editError}</p>}
+
+            <div className="entry-edit-actions">
+              <button type="button" className="outline-button" disabled={editBusy} onClick={cancelEditing}>取消</button>
+              <button type="submit" className="primary" disabled={editBusy}>{editBusy ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}{editBusy ? '保存中…' : '保存修改'}</button>
+            </div>
+          </form>
+        ) : (
+          <>
+            <section className={`entry-hero ${entry.type === 'income' ? 'income-bg' : 'expense-bg'}`} aria-label="这一笔的金额和备注">
+              <span className="entry-hero-icon" aria-hidden="true">
+                {entry.type === 'income' ? <MoneyBagIcon size={22} /> : <span className="entry-hero-yen">¥</span>}
+              </span>
+              <div className="entry-hero-copy">
+                <span className="entry-hero-type">{entry.type === 'income' ? '收入' : '支出'} · {entry.category}</span>
+                <strong className={entry.type === 'income' ? 'income' : 'expense'}>{entry.type === 'income' ? '+' : '−'} ¥ {money(entry.amount)}</strong>
+                {entry.note && <p>{entry.note}</p>}
               </div>
-            )}
-            {entry.images.length > 0 && (
-              <div className="gallery-bar">
-                <span>{entry.images.length} 张图片</span>
+              <span className={`tag ${ownerClass(entry.ownerKey)}`}>
+                <i className="tag-avatar" style={avatar ? { backgroundImage: `url(${avatar})` } : undefined} aria-hidden="true">
+                  {avatar ? null : entry.ownerKey === 'together' ? <Users size={12} /> : <UserRound size={12} />}
+                </i>
+                {entry.owner}
+              </span>
+            </section>
+
+            <p className="entry-when">
+              {dateLabel(entry.date)} · 星期{dayOfWeek(entry.date)}
+              {entry.time ? ` · ${entry.time}` : ''}
+              {proxyAuthor ? ` · 代记为${proxyAuthor}` : ''}
+            </p>
+
+            <section className="entry-photos" aria-label="这一笔的图片">
+              <input
+                ref={photoInput}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+                multiple
+                hidden
+                onChange={(event) => {
+                  const files = Array.from(event.target.files ?? []);
+                  event.target.value = '';
+                  if (files.length) enqueuePhotos(entryId, files, entry.images.length, notify);
+                }}
+              />
+              <PhotoGrid photos={entry.images} onOpen={(index) => setViewer({ photos: entry.images, index })}>
+                {entryUploads.map((task) => (
+                  <UploadTile key={task.key} task={task} />
+                ))}
                 {remaining > 0 && (
-                  <button type="button" className="text-button" onClick={() => photoInput.current?.click()}>
-                    <ImagePlus size={15} />添加照片
+                  <button type="button" className="photo-add" onClick={() => photoInput.current?.click()} aria-label="添加图片">
+                    <ImagePlus size={20} aria-hidden="true" />
+                    <span>{entry.images.length}/{ledger.mediaLimits?.maxPerEntry ?? 9}</span>
                   </button>
                 )}
-              </div>
-            )}
-          </section>
-
-          <section className={`entry-hero ${entry.type === 'income' ? 'income-bg' : 'expense-bg'}`} aria-label="这一笔的金额和备注">
-            <span className="entry-hero-icon" aria-hidden="true">
-              {entry.type === 'income' ? <MoneyBagIcon size={22} /> : <span className="entry-hero-yen">¥</span>}
-            </span>
-            <div className="entry-hero-copy">
-              <span className="entry-hero-type">{entry.type === 'income' ? '收入' : '支出'} · {entry.category}</span>
-              <strong className={entry.type === 'income' ? 'income' : 'expense'}>{entry.type === 'income' ? '+' : '−'} ¥ {money(entry.amount)}</strong>
-              <p>{entry.note || (entry.type === 'income' ? '一笔收入' : '一笔支出')}</p>
-            </div>
-            <span className={`tag ${ownerClass(entry.ownerKey)}`}>
-              <i className="tag-avatar" style={ledger?.avatars?.[entry.ownerKey] ? { backgroundImage: `url(${ledger.avatars[entry.ownerKey]})` } : undefined} aria-hidden="true">
-                {ledger?.avatars?.[entry.ownerKey] ? null : entry.ownerKey === 'together' ? <Users size={12} /> : <UserRound size={12} />}
-              </i>
-              {entry.owner}
-            </span>
-          </section>
-
-          <dl className="entry-meta">
-            <div><dt>发生日期</dt><dd>{dateLabel(entry.date)} · 星期{dayOfWeek(entry.date)}{entry.time ? ` · ${entry.time}` : ''}</dd></div>
-            <div><dt>归属</dt><dd>{entry.owner}</dd></div>
-            <div><dt>分类</dt><dd>{entry.category}</dd></div>
-            <div><dt>记录人</dt><dd>{entry.createdBy ? ownerNames[entry.createdBy] ?? entry.createdBy : '共同'}</dd></div>
-          </dl>
-
-          <EntryComments
-            entryId={entryId}
-            authorKey={authorKey}
-            comments={comments}
-            avatars={ledger?.avatars ?? {}}
-            ownerNames={ownerNames}
-            maxImages={ledger?.mediaLimits?.maxPerComment ?? 3}
-            uploads={uploads}
-            onAdd={addComment}
-            onLike={likeComment}
-            onDelete={deleteComment}
-            onOpenPhoto={(photos, index) => setViewer({ photos, index })}
-            notify={notify}
-          />
-        </main>
-      )}
+              </PhotoGrid>
+            </section>
+          </>
+        )}
+      </main>
 
       {viewer && <PhotoViewer photos={viewer.photos} index={viewer.index} onClose={() => setViewer(null)} onDelete={async (photo) => { await deletePhoto(photo.id).catch((caught: unknown) => notify(caught instanceof Error ? caught.message : '删除图片失败')); }} />}
 
@@ -427,7 +391,7 @@ export default function EntryPage() {
       >
         <div className="modal-inner">
           <h2 id="entry-delete-title">删除这笔记录？</h2>
-          <p>“{entry?.note || '这笔记录'}”将从共享账本删除，图片和评论也会一起消失。</p>
+          <p>“{entry?.note || '这笔记录'}”将从共享账本删除，它的图片也会一起消失。</p>
           <div className="confirm-actions">
             <button type="button" className="outline-button" disabled={deleteBusy} onClick={() => setDeleting(false)}>再想想</button>
             <button type="button" className="danger-button" disabled={deleteBusy} onClick={() => void removeEntry()}>{deleteBusy ? '删除中…' : '确认删除'}</button>
@@ -436,7 +400,30 @@ export default function EntryPage() {
       </dialog>
 
       {toast && <div className="toast" role="status"><Check size={17} />{toast}</div>}
-      {error && <div className="toast" role="alert">{error}<button type="button" onClick={() => { setError(''); void load(); }}>重试</button></div>}
+    </div>
+  );
+}
+
+/** 正在上传/失败的图片瓦片：失败可以单张重试或移除。 */
+function UploadTile({ task }: { task: UploadTask }) {
+  return (
+    <div className={`photo-tile${task.status === 'error' ? ' is-error' : ' is-uploading'}`}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={task.preview} alt="" draggable={false} />
+      {task.status === 'error' ? (
+        <>
+          <button type="button" className="photo-retry" onClick={() => retryTask(task.key)} aria-label={task.error || '重试上传'}>
+            <RotateCcw size={16} />
+          </button>
+          <button type="button" className="photo-remove" onClick={() => dismissTask(task.key)} aria-label="移除这张图片">
+            <X size={13} />
+          </button>
+        </>
+      ) : (
+        <span className="photo-progress" aria-label={`上传中 ${task.progress}%`}>
+          <i style={{ width: `${task.progress}%` }} />
+        </span>
+      )}
     </div>
   );
 }

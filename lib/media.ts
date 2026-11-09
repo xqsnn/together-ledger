@@ -1,11 +1,12 @@
 /**
- * 图片与评论的纯逻辑：常量、魔数嗅探、id/正文校验、错误码。
+ * 图片相关的纯逻辑：常量、魔数嗅探、id 校验、错误码。
  * 不依赖 cloudflare:workers，可在 Node 里直接回归测试。
+ *
+ * 评论功能已下线，但数据库里的 comments / comment_likes / media.comment_id 仍然保留
+ * （见 db/schema.ts 的说明）：删掉 schema 定义会让 db:generate 产出破坏性迁移。
  */
 
 export const MAX_ENTRY_IMAGES = 9;
-export const MAX_COMMENT_IMAGES = 3;
-export const MAX_COMMENT_LENGTH = 300;
 export const MAX_IMAGE_DIMENSION = 10000;
 export const MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
 export type ImageMime = (typeof MIME_TYPES)[number];
@@ -17,21 +18,6 @@ export type MediaLimits = {
   maxBytes: number;
   maxThumbBytes: number;
   maxPerEntry: number;
-  maxPerComment: number;
-};
-export type CommentRecord = {
-  id: string;
-  entryId: string;
-  /** 顶级评论为 null；回复统一挂在根评论上（最多两级）。 */
-  parentId: string | null;
-  /** 回复的是谁，用来显示「回复 @某某」。 */
-  replyToOwner: string | null;
-  body: string;
-  createdBy: string;
-  createdAt: string;
-  images: MediaMeta[];
-  likeCount: number;
-  likedByMe: boolean;
 };
 
 export const IMAGE_LIMITS: Record<MediaStorage, { maxBytes: number; maxThumbBytes: number }> = {
@@ -49,7 +35,6 @@ const STATUS_BY_CODE = {
   ENTRY_NOT_FOUND: 404,
   REVISION_CONFLICT: 409,
   ENTRY_CONFLICT: 409,
-  COMMENT_INVALID: 400,
   MEDIA_UNAVAILABLE: 503,
   SERVER_ERROR: 500,
 } as const;
@@ -97,15 +82,6 @@ export function isThumbJpeg(bytes: Uint8Array): boolean {
 /** 客户端生成的 UUID 或 32 位 hex；限制字符集与长度，避免拼进对象 key 后越界。 */
 export function isValidId(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 64 && /^[A-Za-z0-9_-]+$/.test(value);
-}
-
-export function normalizeCommentBody(value: unknown): string {
-  if (typeof value !== 'string') throw mediaError('COMMENT_INVALID', '评论内容无效');
-  const body = value.trim();
-  const length = [...body].length;
-  if (length < 1) throw mediaError('COMMENT_INVALID', '评论不能为空');
-  if (length > MAX_COMMENT_LENGTH) throw mediaError('COMMENT_INVALID', `评论不能超过 ${MAX_COMMENT_LENGTH} 字`);
-  return body;
 }
 
 export function mediaObjectKey(id: string, variant: MediaVariant): string {
