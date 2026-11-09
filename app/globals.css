@@ -508,7 +508,9 @@ svg { flex-shrink: 0; }
 .amount-field input { width: 100%; min-width: 0; padding: 0; border: 0; background: none; font-family: var(--num); font-size: 34px; font-weight: 600; letter-spacing: .2px; color: var(--ink); }
 .amount-field input:focus-visible { outline-offset: 4px; border-radius: 3px; }
 .amount-field input::placeholder { color: #839278; }
+/* 备注挪到金额下方后，紧跟其后的分组标题需要自己带一点上间距。 */
 .field-label { display: block; margin-bottom: 10px; font-size: 13px; color: #526c45; }
+.form-field + .field-label { margin-top: 16px; }
 .field-label > span { color: #886545; }
 .owner-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 16px; }
 .owner-choices button { display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 8px; min-height: 0; padding: 4px 4px 6px; border: 0; border-radius: 12px; background: none; color: #5f7651; font-size: 13px; transition: transform .46s var(--ease-spring), color .24s ease; }
@@ -537,7 +539,7 @@ svg { flex-shrink: 0; }
 .category-choices button:active:not(:disabled) { transform: scale(.94); transition-duration: .12s; }
 .category-choices button.selected { border-color: rgba(113, 141, 85, .75); background: linear-gradient(150deg, rgba(234, 241, 223, .95), rgba(223, 236, 209, .75)); color: #355b35; font-weight: 600; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9), 0 3px 10px rgba(53, 94, 77, .08); animation: chip-select .42s var(--ease-spring); }
 .form-field { display: block; margin-top: 16px; font-size: 13px; color: #526c45; }
-.form-field input { display: block; width: 100%; min-height: 46px; margin-top: 9px; padding: 12px 13px; border: 1px solid rgba(255, 255, 255, .7); border-radius: 9px; background: rgba(255, 255, 255, .58); font-size: 16px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9), 0 1px 2px rgba(38, 61, 52, .03); }
+.form-field input { display: block; width: 100%; min-height: 44px; margin-top: 9px; padding: 6px 12px; border: 1px solid rgba(255, 255, 255, .7); border-radius: 9px; background: rgba(255, 255, 255, .58); font-size: 16px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9), 0 1px 2px rgba(38, 61, 52, .03); }
 .form-field input::placeholder { color: #6f7c64; }
 .date-select { position: relative; margin-top: 9px; }
 .date-select-trigger { display: flex; width: 100%; min-height: 44px; align-items: center; justify-content: flex-start; gap: 9px; padding: 10px 12px; border: 1px solid rgba(255, 255, 255, .7); border-radius: 9px; background: rgba(255, 255, 255, .58); color: #3f5542; font-size: 14px; text-align: left; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .9), 0 1px 2px rgba(38, 61, 52, .03); }
@@ -982,6 +984,12 @@ svg { flex-shrink: 0; }
 .account-row { display: flex; flex-direction: column; align-items: stretch; gap: 12px; }
 .account-row > .setting-copy p { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
 .account-form { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 14px; background: rgba(255, 255, 255, .5); border: 1px solid var(--line-soft); }
+/* 设置 · 账号：主页面右侧是当前登录身份的头像，点进账号二级页。 */
+.setting-row > .setting-copy p { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+.account-avatar-button { flex-shrink: 0; padding: 0; border-radius: 999px; }
+.account-avatar-button:hover:not(:disabled) { transform: translateY(-1px); }
+.account-back { display: inline-flex; align-items: center; gap: 2px; min-height: 34px; margin: -8px 0 8px -8px; padding: 4px 12px 4px 4px; border-radius: 999px; color: #4f6352; font-size: 13px; }
+.account-back:hover:not(:disabled) { background: rgba(255, 255, 255, .62); }
 .account-form .form-field input { width: 100%; }
 
 /* ---------- 记录图片与评论 ---------- */

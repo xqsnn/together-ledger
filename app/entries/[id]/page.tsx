@@ -293,12 +293,12 @@ export default function EntryPage() {
               <div><b>¥</b><input aria-label="金额" inputMode="decimal" placeholder="0.00" value={editAmount} onChange={(event) => setEditAmount(event.target.value)} maxLength={12} required autoComplete="off" /></div>
             </label>
 
+            <label className="form-field">备注<span className="optional">选填</span><input maxLength={100} placeholder="这一笔，是生活里的什么？" value={editNote} onChange={(event) => setEditNote(event.target.value)} /></label>
+
             <span className="field-label">分类</span>
             <div className="category-choices" role="group" aria-label="记账分类">
               {categoryList.map((item) => <button key={item} type="button" aria-pressed={editCategory === item} className={editCategory === item ? 'selected' : ''} onClick={() => setEditCategory(item)}>{item}</button>)}
             </div>
-
-            <label className="form-field">备注<span className="optional">选填</span><input maxLength={100} placeholder="这一笔，是生活里的什么？" value={editNote} onChange={(event) => setEditNote(event.target.value)} /></label>
 
             <span className="field-label">记在谁的名下</span>
             <div className="owner-choices">

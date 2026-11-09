@@ -175,7 +175,8 @@ export default function Home() {
   const [authChecked, setAuthChecked] = useState(false);
   const sessionRef = useRef<AuthSession | null>(null);
   // 设置页的账号操作
-  const [accountOpen, setAccountOpen] = useState(false);
+  // 设置页的二级页面：null 表示设置首页，'account' 表示账号页。
+  const [settingsSub, setSettingsSub] = useState<'account' | null>(null);
   const [currentPassword, setCurrentPassword] = useState('');
   const [nextPassword, setNextPassword] = useState('');
   const [accountBusy, setAccountBusy] = useState(false);
@@ -247,9 +248,12 @@ export default function Home() {
     return fetch('/api/ledger', { cache: 'no-store', signal })
       .then(async (response) => {
         if (response.status === 401) {
-          // 登录态失效（过期或被改密踢下线）：退回登录页。
+          // 登录态失效（过期或被改密踢下线）：退回登录页，并清掉账号页里残留的输入。
           sessionRef.current = null;
           setSession(null);
+          setSettingsSub(null);
+          setCurrentPassword('');
+          setNextPassword('');
           return;
         }
         const result = (await response.json()) as Ledger & { error?: string };
@@ -285,6 +289,10 @@ export default function Home() {
     sessionRef.current = next;
     setSession(next);
     setAuthChecked(true);
+    // 这是个两人共用的账本：换人登录后不从别人的账号二级页开始。
+    setSettingsSub(null);
+    setCurrentPassword('');
+    setNextPassword('');
     setLoading(true);
     void refresh();
   }, [refresh]);
@@ -345,7 +353,6 @@ export default function Home() {
     query.addEventListener('change', onChange);
     return () => query.removeEventListener('change', onChange);
   }, []);
-
 
   const data = ledger;
   const ownerNames = data.owners.map((item) => item.name);
@@ -763,7 +770,6 @@ export default function Home() {
     setAccountBusy(true);
     try {
       await callAuth({ action: 'password', current: currentPassword, next: nextPassword });
-      setAccountOpen(false);
       setCurrentPassword('');
       setNextPassword('');
       notify('密码已更新，其它设备需要重新登录');
@@ -784,7 +790,9 @@ export default function Home() {
     setSession(null);
     setHasLoaded(false);
     setLedger(blank);
-    setAccountOpen(false);
+    setSettingsSub(null);
+    setCurrentPassword('');
+    setNextPassword('');
     setModal(null);
   }
 
@@ -797,6 +805,8 @@ export default function Home() {
 
   // top: 明确的「去看某一天/日历」跳转从顶部开始；页签切换则恢复各自上次的位置。
   function goTo(viewName: View, options?: { top?: boolean }) {
+    // 切走，或再点一次当前页签，都回到设置首页，不会卡在账号二级页。
+    if (viewName !== 'settings' || viewName === view) setSettingsSub(null);
     if (options?.top) setTopRequest(viewName);
     setView(viewName);
     if (viewName === 'today') resetFilters();
@@ -1154,42 +1164,62 @@ export default function Home() {
   }
   /* eslint-enable react-hooks/refs */
 
-  /* eslint-disable react-hooks/refs -- 上传回调只在选择文件后执行，不会在渲染期间读取 ref */
+  function renderOwnerAvatars() {
+    return <div className="owner-avatars">{data.owners.map((item) => {
+      const photo = photoForOwner(item.key);
+      return <div className="owner-avatar-item" key={item.key}>
+        <label className={`owner-avatar-upload ${ownerClass(item.key)}`} aria-label={`上传${item.name}的头像`} aria-busy={avatarBusy === item.key}>
+          {photo ? <span className="owner-avatar-image" style={{ backgroundImage: `url(${photo})` }} /> : <UserRound size={22} />}
+          <span className="owner-avatar-hint">{avatarBusy === item.key ? '上传中' : photo ? '更换' : '上传'}</span>
+          <input type="file" accept="image/*" className="avatar-input" disabled={avatarBusy === item.key} onChange={(event) => chooseAvatar(event, item.key)} />
+        </label>
+        {editingOwner === item.key ? <div className="owner-name-editor"><input value={ownerNameDraft} maxLength={8} autoFocus onChange={(event) => setOwnerNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void saveOwnerName(item.key); } else if (event.key === 'Escape') setEditingOwner(null); }} /><button type="button" aria-label="保存名字" disabled={ownerBusy === item.key} onClick={() => void saveOwnerName(item.key)}><Check size={13} /></button><button type="button" aria-label="取消" onClick={() => setEditingOwner(null)}><X size={13} /></button></div> : <button type="button" className="owner-name-button" aria-label={`编辑${item.name}的名字`} onClick={() => startEditOwner(item)}><span className="owner-avatar-name">{item.name}</span></button>}
+      </div>;
+    })}</div>;
+  }
+
   function renderSettings() {
     if (!session) return null;
     const me = session;
-    return <div className="settings-panel panel">
-      <div className="section-head"><h2>账本设置</h2><BookHeart size={20} /></div>
-      <div className="setting-row account-row">
-        <div className="setting-copy"><h3>登录账号</h3><p>当前以「{ownerNameByKey.get(me.ownerKey) ?? me.name}」登录</p></div>
-        <div className="account-actions">
-          <button className="outline-button" onClick={() => setAccountOpen((open) => !open)}>{accountOpen ? '收起' : '修改密码'}</button>
+    const avatar = photoForOwner(me.ownerKey);
+    const name = ownerNameByKey.get(me.ownerKey) ?? me.name;
+
+    // 账号二级页：记账归属、修改密码、退出登录都收在这里。
+    if (settingsSub === 'account') {
+      return <div className="settings-panel panel">
+        <button type="button" className="account-back" onClick={() => { setSettingsSub(null); setTopRequest('settings'); }}><ChevronLeft size={17} />返回</button>
+        <div className="setting-row owner-setting">
+          <div className="setting-copy"><h3>记账归属</h3><p>头像和名字会用在记账、明细和分析里</p></div>
+          {renderOwnerAvatars()}
+        </div>
+        <div className="setting-row account-row">
+          <div className="setting-copy"><h3>修改密码</h3><p>改完以后，其它设备需要重新登录</p></div>
+          <form className="account-form" onSubmit={changePassword}>
+            <label className="form-field">当前密码<input type="password" autoComplete="current-password" required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
+            <label className="form-field">新密码<input type="password" autoComplete="new-password" minLength={6} required value={nextPassword} onChange={(event) => setNextPassword(event.target.value)} placeholder="至少 6 位" /></label>
+            <div className="account-actions"><button type="submit" className="primary" disabled={accountBusy}>{accountBusy ? '保存中…' : '保存新密码'}</button></div>
+          </form>
+        </div>
+        <div className="setting-row">
+          <div className="setting-copy"><h3>退出登录</h3><p>退出后需要重新输入密码</p></div>
           <button className="outline-button" onClick={() => void signOut()}>退出登录</button>
         </div>
-        {accountOpen && <form className="account-form" onSubmit={changePassword}>
-          <label className="form-field">当前密码<input type="password" autoComplete="current-password" required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
-          <label className="form-field">新密码<input type="password" autoComplete="new-password" minLength={6} required value={nextPassword} onChange={(event) => setNextPassword(event.target.value)} placeholder="至少 6 位" /></label>
-          <div className="account-actions"><button type="submit" className="primary" disabled={accountBusy}>{accountBusy ? '保存中…' : '保存新密码'}</button></div>
-        </form>}
-      </div>
-      <div className="setting-row owner-setting">
-        <div className="setting-copy"><h3>记账归属</h3></div>
-        <div className="owner-avatars">{data.owners.map((item) => {
-          const photo = photoForOwner(item.key);
-          return <div className="owner-avatar-item" key={item.key}>
-            <label className={`owner-avatar-upload ${ownerClass(item.key)}`} aria-label={`上传${item.name}的头像`} aria-busy={avatarBusy === item.key}>
-              {photo ? <span className="owner-avatar-image" style={{ backgroundImage: `url(${photo})` }} /> : <UserRound size={22} />}
-              <span className="owner-avatar-hint">{avatarBusy === item.key ? '上传中' : photo ? '更换' : '上传'}</span>
-              <input type="file" accept="image/*" className="avatar-input" disabled={avatarBusy === item.key} onChange={(event) => chooseAvatar(event, item.key)} />
-            </label>
-            {editingOwner === item.key ? <div className="owner-name-editor"><input value={ownerNameDraft} maxLength={8} autoFocus onChange={(event) => setOwnerNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void saveOwnerName(item.key); } else if (event.key === 'Escape') setEditingOwner(null); }} /><button type="button" aria-label="保存名字" disabled={ownerBusy === item.key} onClick={() => void saveOwnerName(item.key)}><Check size={13} /></button><button type="button" aria-label="取消" onClick={() => setEditingOwner(null)}><X size={13} /></button></div> : <button type="button" className="owner-name-button" aria-label={`编辑${item.name}的名字`} onClick={() => startEditOwner(item)}><span className="owner-avatar-name">{item.name}</span></button>}
-          </div>;
-        })}</div>
-      </div>
+      </div>;
+    }
+
+    return <div className="settings-panel panel">
+      <div className="section-head"><h2>账本设置</h2><BookHeart size={20} /></div>
       <div className="setting-row"><div className="setting-copy"><h3>分类管理</h3></div><button className="outline-button" onClick={openCategories}>编辑分类</button></div>
+      <div className="setting-row">
+        <div className="setting-copy"><h3>账号</h3><p>当前以「{name}」登录</p></div>
+        <button type="button" className="account-avatar-button" aria-label={`账号设置，当前以${name}登录`} title="账号设置" onClick={() => { setCurrentPassword(''); setNextPassword(''); setSettingsSub('account'); setTopRequest('settings'); }}>
+          <span className={`owner-choice-avatar ${ownerClass(me.ownerKey)}${avatar ? ' has-photo' : ''}`}>
+            {avatar ? <span className="owner-choice-photo" style={{ backgroundImage: `url(${avatar})` }} aria-hidden="true" /> : <span className="owner-choice-initial">{name.slice(0, 1)}</span>}
+          </span>
+        </button>
+      </div>
     </div>;
   }
-  /* eslint-enable react-hooks/refs */
 
   // 未确认登录态前不渲染主界面；未登录时只显示登录门禁。
   if (!authChecked) {
@@ -1214,7 +1244,7 @@ export default function Home() {
           onScroll={(event) => { scrollPositions[view] = event.currentTarget.scrollTop; }}
         >
           <div className="content">{error && <div className="error-banner" role="alert">{hasLoaded ? `${error}，当前显示上次同步的账目。` : error}<button onClick={() => { setLoading(true); void refresh(); }}><RefreshCw size={14} />重试</button></div>}
-          {view !== 'today' && <section className="page-heading page-heading-in" key={`heading-${view}`}><div><h1>{heading[view]}</h1></div></section>}
+          {view !== 'today' && <section className="page-heading page-heading-in" key={`heading-${view}`}><div><h1>{view === 'settings' && settingsSub === 'account' ? '账号' : heading[view]}</h1></div></section>}
           {!dataReady ? <section className="panel empty" role="status">{loading ? <><LoaderCircle className="spin" size={26} /><h2>正在翻开账本…</h2></> : <><BookHeart size={30} /><h2>账目暂时无法加载</h2><p>请检查网络后重试。</p><button className="outline-button" onClick={() => { setLoading(true); void refresh(); }}>重新加载</button></>}</section> : (
             <div className="view-stage" key={view}>
               {view === 'today' ? renderToday() : view === 'records' ? renderRecords() : view === 'analysis' ? renderAnalysis() : renderSettings()}
@@ -1241,10 +1271,10 @@ export default function Home() {
 
               <label className="amount-field"><span>金额</span><div><b>¥</b><input aria-label="金额" inputMode="decimal" placeholder="0.00" value={amount} onChange={(event) => setAmount(event.target.value)} maxLength={12} required autoComplete="off" /></div></label>
 
+              <label className="form-field">备注<span className="optional">选填</span><input maxLength={100} placeholder="这一笔，是生活里的什么？" value={note} onChange={(event) => setNote(event.target.value)} /></label>
+
               <span className="field-label">分类</span>
               <div className="category-choices" role="group" aria-label="记账分类">{data.categories[entryType].map((item) => <button key={item} type="button" aria-pressed={entryCategory === item} className={entryCategory === item ? 'selected' : ''} onClick={() => setEntryCategory(item)}>{item}</button>)}</div>
-
-              <label className="form-field">备注<span className="optional">选填</span><input maxLength={100} placeholder="这一笔，是生活里的什么？" value={note} onChange={(event) => setNote(event.target.value)} /></label>
 
               <span className="field-label">记在谁的名下</span>
             <div className="owner-choices">{data.owners.map((item) => {
