@@ -99,6 +99,26 @@ const blank: Ledger = {
 };
 // 手机竖屏断点：与样式里的 560px 保持一致，用于决定归属胶囊是否显示名字。
 const NARROW_QUERY = '(max-width: 560px)';
+// 每个页签的滚动位置只用于行为记忆、不参与渲染，所以放在模块作用域；
+// 同时写一份到 sessionStorage，刷新或从详情页返回也能回到原处。
+const SCROLL_STORE = 'ledger:scroll';
+const scrollPositions: Record<string, number> = {};
+
+function hydrateScrollPositions() {
+  try {
+    Object.assign(scrollPositions, JSON.parse(window.sessionStorage.getItem(SCROLL_STORE) ?? '{}'));
+  } catch {
+    /* 隐私模式下 sessionStorage 可能不可用，忽略即可。 */
+  }
+}
+
+function saveScrollPositions() {
+  try {
+    window.sessionStorage.setItem(SCROLL_STORE, JSON.stringify(scrollPositions));
+  } catch {
+    /* 同上 */
+  }
+}
 const money = (n: number) =>
   (n / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const ownerClass = (key: string) => (key === 'qing' ? 'qing' : key === 'hua' ? 'hua' : 'together');
@@ -172,6 +192,9 @@ export default function Home() {
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastOutTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const modalCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const contentScrollRef = useRef<HTMLDivElement>(null);
+  // 记录一次「这次切过去从顶部开始」的请求，避免显式跳转落到上一次的滚动位置。
+  const [topRequest, setTopRequest] = useState<View | null>(null);
 
   const notify = (text: string) => {
     setToast(text);
@@ -333,6 +356,25 @@ export default function Home() {
   const month = view === 'analysis' ? (analysisMonth ?? currentMonth) : (calendarSelection?.month ?? currentMonth);
   const selectedDay = calendarSelection?.day ?? data.today;
   const dataReady = hasLoaded;
+
+  // 滚动位置记忆：切页签、从详情页返回都回到原处，贴近原生 App 的体验。
+  useEffect(() => {
+    hydrateScrollPositions();
+    return saveScrollPositions;
+  }, []);
+
+  useIsomorphicLayoutEffect(() => {
+    if (!dataReady) return;
+    const scroller = contentScrollRef.current;
+    if (!scroller) return;
+    if (topRequest === view) {
+      scrollPositions[view] = 0;
+      scroller.scrollTop = 0;
+      setTopRequest(null);
+      return;
+    }
+    scroller.scrollTop = scrollPositions[view] ?? 0;
+  }, [view, dataReady, topRequest]);
   const monthLabel = `${Number(month.slice(0, 4))} 年 ${Number(month.slice(5))} 月`;
   const isCurrent = month === currentMonth;
   const monthStats = totals(data.entries.filter((entry) => analysisOwner === '全部' || entry.ownerKey === analysisOwner), month, 0, ownerNames);
@@ -693,7 +735,7 @@ export default function Home() {
       } else {
         // 补记历史日期时首页看不到这一笔，切到账目并选到那一天。
         selectDay(date);
-        goTo('records');
+        goTo('records', { top: true });
         setRecordMode('list');
         notify(`已记到 ${dateLabel(date)}`);
       }
@@ -753,8 +795,9 @@ export default function Home() {
     setCalendarSelection(null);
   }
 
-  function goTo(viewName: View) {
-    if (viewName !== view) window.scrollTo({ top: 0 });
+  // top: 明确的「去看某一天/日历」跳转从顶部开始；页签切换则恢复各自上次的位置。
+  function goTo(viewName: View, options?: { top?: boolean }) {
+    if (options?.top) setTopRequest(viewName);
     setView(viewName);
     if (viewName === 'today') resetFilters();
   }
@@ -863,7 +906,7 @@ export default function Home() {
           </div>
         </section>
         <section className="today-records panel">
-          <div className="section-head"><div><h2>今天的记录 <span>{todayEntries.length} 笔</span></h2></div><button className="text-button" onClick={() => { goTo('records'); setRecordMode('calendar'); resetFilters(); }}>查看日历 <CalendarDays size={16} /></button></div>
+          <div className="section-head"><div><h2>今天的记录 <span>{todayEntries.length} 笔</span></h2></div><button className="text-button" onClick={() => { goTo('records', { top: true }); setRecordMode('calendar'); resetFilters(); }}>查看日历 <CalendarDays size={16} /></button></div>
           <div className="entry-list">{entryRows(todayEntries, true)}</div>
         </section>
       </>
@@ -1018,7 +1061,7 @@ export default function Home() {
                   setOwner(analysisOwner);
                   setType('all');
                   setRecordMode('calendar');
-                  goTo('records');
+                  goTo('records', { top: true });
                 }}
               >
                 查看当天 <ArrowRight size={14} />
@@ -1058,7 +1101,7 @@ export default function Home() {
         </div>
         <section className="analysis-trend panel">
           <div className="section-head"><div><h2>每天的收支趋势</h2></div><TrendingUp size={20} aria-hidden="true" /></div>
-          {recordedDays ? <><div className="trend-scroll" ref={trendScrollRef} tabIndex={0} role="region" aria-label="每日收支柱状图，可横向滚动"><div className="trend-chart">{trendDays.map((item, index) => <button className="trend-column" key={item.date} aria-pressed={trendSelection.date === item.date} aria-label={`${item.date}，${item.count ? `收入${money(item.income)}元，支出${money(item.expense)}元` : '尚无记录'}`} title={`${dateLabel(item.date)}：收入 ¥${money(item.income)} / 支出 ¥${money(item.expense)}`} onClick={() => setTrendDay(item.date)}><span className="trend-bars" aria-hidden="true"><span className="trend-bar income" style={{ height: `${item.income / maxDailyAmount * 100}%`, animationDelay: `${Math.min(index, 24) * 16}ms` }} /><span className="trend-bar expense" style={{ height: `${item.expense / maxDailyAmount * 100}%`, animationDelay: `${Math.min(index, 24) * 16}ms` }} /></span><small>{Number(item.date.slice(8))}</small></button>)}</div></div><div className="trend-readout" aria-live="polite"><strong>{dateLabel(trendSelection.date)}</strong><span>{trendSelection.count ? `收入 ¥${money(trendSelection.income)} · 支出 ¥${money(trendSelection.expense)}` : '尚无记录'}</span><button className="text-button" onClick={() => { selectDay(trendSelection.date); setOwner(analysisOwner); setType('all'); setRecordMode('calendar'); goTo('records'); }}>查看当天<ArrowRight size={15} /></button></div></> : <div className="empty"><BarChart3 size={28} /><h3>当月还没有记录</h3></div>}
+          {recordedDays ? <><div className="trend-scroll" ref={trendScrollRef} tabIndex={0} role="region" aria-label="每日收支柱状图，可横向滚动"><div className="trend-chart">{trendDays.map((item, index) => <button className="trend-column" key={item.date} aria-pressed={trendSelection.date === item.date} aria-label={`${item.date}，${item.count ? `收入${money(item.income)}元，支出${money(item.expense)}元` : '尚无记录'}`} title={`${dateLabel(item.date)}：收入 ¥${money(item.income)} / 支出 ¥${money(item.expense)}`} onClick={() => setTrendDay(item.date)}><span className="trend-bars" aria-hidden="true"><span className="trend-bar income" style={{ height: `${item.income / maxDailyAmount * 100}%`, animationDelay: `${Math.min(index, 24) * 16}ms` }} /><span className="trend-bar expense" style={{ height: `${item.expense / maxDailyAmount * 100}%`, animationDelay: `${Math.min(index, 24) * 16}ms` }} /></span><small>{Number(item.date.slice(8))}</small></button>)}</div></div><div className="trend-readout" aria-live="polite"><strong>{dateLabel(trendSelection.date)}</strong><span>{trendSelection.count ? `收入 ¥${money(trendSelection.income)} · 支出 ¥${money(trendSelection.expense)}` : '尚无记录'}</span><button className="text-button" onClick={() => { selectDay(trendSelection.date); setOwner(analysisOwner); setType('all'); setRecordMode('calendar'); goTo('records', { top: true }); }}>查看当天<ArrowRight size={15} /></button></div></> : <div className="empty"><BarChart3 size={28} /><h3>当月还没有记录</h3></div>}
           <div className="trend-legend"><span><i className="legend-income" />收入</span><span><i className="legend-expense" />支出</span><span>共 {elapsedDays} 天</span></div>
           {recordedDays > 0 && <details className="analysis-table"><summary>查看每日数据</summary><div className="table-scroll"><table><caption>{monthLabel} · {analysisOwnerName ?? '全部归属'}</caption><thead><tr><th scope="col">日期</th><th scope="col">收入</th><th scope="col">支出</th><th scope="col">结余</th><th scope="col">记录</th></tr></thead><tbody>{trendDays.map((item) => <tr key={item.date}><th scope="row">{dateLabel(item.date)}</th><td>{item.count ? money(item.income) : '—'}</td><td>{item.count ? money(item.expense) : '—'}</td><td>{item.count ? money(item.surplus) : '—'}</td><td>{item.count ? `${item.count} 笔` : '未记录'}</td></tr>)}</tbody></table></div></details>}
         </section>
@@ -1165,7 +1208,12 @@ export default function Home() {
     <div className="app-shell">
       <aside className="sidebar"><NextLink className="brand" href="/" onClick={() => goTo('today')} aria-label="两人账本首页"><span className="brand-icon"><BookHeart size={23} /></span><span>两人账本</span></NextLink><SlidingNav active={view} aria-label="主导航"><button aria-current={view === 'today' ? 'page' : undefined} className={view === 'today' ? 'active' : ''} onClick={() => goTo('today')}><Wallet size={19} />今天<span className="nav-dot" /></button><button aria-current={view === 'analysis' ? 'page' : undefined} className={view === 'analysis' ? 'active' : ''} onClick={() => goTo('analysis')}><BarChart3 size={19} />分析<span className="nav-dot" /></button><button aria-current={view === 'settings' ? 'page' : undefined} className={view === 'settings' ? 'active' : ''} onClick={() => goTo('settings')}><SlidersHorizontal size={19} />账本设置<span className="nav-dot" /></button></SlidingNav><div className="sidebar-bottom"><div className="sidebar-note"><Duo small /><p>生活的小事，<br />我们一起慢慢记。</p><span>EVERY LITTLE THING, TOGETHER.</span></div><div className="sidebar-foot"><span className="online-dot" />云端账本<span>人民币 CNY</span></div></div></aside>
       <main className="main"><header className="topbar"><span className="topbar-logo" role="img" aria-label="利通" title="利通"><Duo logo /></span><div className="topbar-meta"><span className="topbar-date">{dateLabel(data.today)}<em> · 星期{dayOfWeek(data.today)}</em></span><span className="topbar-savings" aria-label={`当前共同存款 ${money(balance)} 元`}><b className={balance >= 0 ? 'income' : 'expense'}>¥ {money(balance)}</b></span></div></header>
-        <div className="content">{error && <div className="error-banner" role="alert">{hasLoaded ? `${error}，当前显示上次同步的账目。` : error}<button onClick={() => { setLoading(true); void refresh(); }}><RefreshCw size={14} />重试</button></div>}
+        <div
+          className="content-scroll"
+          ref={contentScrollRef}
+          onScroll={(event) => { scrollPositions[view] = event.currentTarget.scrollTop; }}
+        >
+          <div className="content">{error && <div className="error-banner" role="alert">{hasLoaded ? `${error}，当前显示上次同步的账目。` : error}<button onClick={() => { setLoading(true); void refresh(); }}><RefreshCw size={14} />重试</button></div>}
           {view !== 'today' && <section className="page-heading page-heading-in" key={`heading-${view}`}><div><h1>{heading[view]}</h1></div></section>}
           {!dataReady ? <section className="panel empty" role="status">{loading ? <><LoaderCircle className="spin" size={26} /><h2>正在翻开账本…</h2></> : <><BookHeart size={30} /><h2>账目暂时无法加载</h2><p>请检查网络后重试。</p><button className="outline-button" onClick={() => { setLoading(true); void refresh(); }}>重新加载</button></>}</section> : (
             <div className="view-stage" key={view}>
@@ -1173,6 +1221,7 @@ export default function Home() {
             </div>
           )}
           <footer className="footer"><span><Heart size={12} />两个人的日子，一起好好过。</span><span>两人账本<span className="footer-dot">·</span>始于生活，记于日常</span></footer>
+          </div>
         </div>
       </main>
 

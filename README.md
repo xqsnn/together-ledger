@@ -47,6 +47,13 @@ pnpm run dev
 
 本地迁移仅首次运行或增加迁移时执行（0000 建表，0001 增加分类字段，0002 增加头像表，0003 增加动态分类和归属名字表，0004 将账目和头像的归属迁移为稳定的 owner key，0005_entry_time 增加账目发生时间，0005_login 增加登录用的 accounts / sessions / join_codes 表与 entries.created_by，0006 增加图片/评论相关的 comments / media / media_deletions / media_state / media_blobs 表，0007 给评论增加 parent_id / reply_to_owner 并新增 comment_likes 表（评论已下线，这些表与 `media.comment_id` 列仍保留，不要从 schema 里删除））；线上 D1 需要执行对应迁移时，去掉 `--local` 并加上 `--remote`。注意 0005_entry_time、0005_login 与 0007 包含 `ALTER TABLE ADD COLUMN`，不是幂等的，只需执行一次；0006 只新增表与索引，可重复执行。开发地址以命令输出为准。部署到其他平台需要提供兼容的 Cloudflare Workers 运行环境和 D1 绑定，不能仅部署为静态网页。
 
+## 手机端与安装
+
+- 布局是「固定外壳 + 内容滚动」：顶栏和底部导航钉住不动，只有中间内容区滚动；切页签各自记住滚动位置，从详情页返回也回到原处。相关样式见 `app/globals.css` 的 `.app-shell` / `.content-scroll` / `.entry-page`。
+- 可以「添加到主屏幕」当 App 用：`public/manifest.webmanifest` 声明 `display: standalone`，从主屏幕启动时全屏、没有地址栏，浏览器工具栏伸缩带来的页面位移也随之消失。iOS 走 `app/layout.tsx` 里的 `metadata.appleWebApp`，图标在 `public/icons/`。
+- `public/sw.js` 只缓存外壳与静态资源，`/api/*` 一律走网络；注册逻辑只在生产环境生效（`components/service-worker-registrar.tsx`），避免开发时把 Vite 的模块缓存成旧代码。
+- 验证安装效果要先 `pnpm run build && pnpm start`（Service Worker 只在 https 或 localhost 下可用），再在手机 Safari「分享 → 添加到主屏幕」。改过 `sw.js` 要同步升 `VERSION`，否则旧外壳会一直命中缓存。
+
 ## 图片存储
 
 - 图片对象优先写入 R2 的 `BUCKET` 绑定；没有绑定 BUCKET 时自动存入 D1 的 `media_blobs`，此时单张原图上限 700 KB、缩略图上限 120 KB（R2 模式为 2 MB / 300 KB）。
