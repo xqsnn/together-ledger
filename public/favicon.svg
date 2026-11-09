@@ -9,7 +9,7 @@
   </defs>
   <g clip-path="url(#round)">
   <rect width="1024" height="1024" fill="url(#bg)"/>
-  <g transform="translate(512 512) scale(1.0) translate(-512 -512)">
+  <g transform="translate(512 512) scale(1.08) translate(-512 -512)">
     <g transform="rotate(7 688 664)">
       <path d="M 468, 606 A 220 220 0 0 1 688, 386 L 688, 386 A 220 220 0 0 1 908, 606 L 908, 834 A 108 108 0 0 1 800, 942 L 576, 942 A 108 108 0 0 1 468, 834 Z" fill="#e7cfb9" stroke="#d5bfa8" stroke-width="8"/>
       <circle cx="650" cy="647" r="11" fill="#aa917b"/>
