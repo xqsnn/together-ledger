@@ -3,7 +3,7 @@
  * 目标：让「添加到主屏幕」后启动接近原生——外壳秒开、断网也能先看到界面。
  * 红线：/api/* 一律不缓存，账目、登录态永远走网络，避免看到别人的或过期的数据。
  */
-const VERSION = 'v5';
+const VERSION = 'v4';
 const SHELL_CACHE = `ledger-shell-${VERSION}`;
 const ASSET_CACHE = `ledger-assets-${VERSION}`;
 const SHELL_URLS = [

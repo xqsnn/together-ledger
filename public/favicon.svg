@@ -1,79 +1,30 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <defs>
-    <linearGradient id="bg" x1="0.12" y1="0" x2="0.85" y2="1">
-      <stop offset="0%" stop-color="#41755c"/>
-      <stop offset="52%" stop-color="#2a5747"/>
-      <stop offset="100%" stop-color="#16332b"/>
+    <linearGradient id="bg" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0%" stop-color="#faf9f2"/>
+      <stop offset="60%" stop-color="#f6f5ec"/>
+      <stop offset="100%" stop-color="#eeede0"/>
     </linearGradient>
-    <radialGradient id="bgGlow" cx="0.24" cy="0.1" r="0.72">
-      <stop offset="0%" stop-color="#dff0d8" stop-opacity="0.30"/>
-      <stop offset="100%" stop-color="#dff0d8" stop-opacity="0"/>
-    </radialGradient>
-    <linearGradient id="greenFill" x1="0.25" y1="0" x2="0.8" y2="1">
-      <stop offset="0%" stop-color="#dcf0d2"/>
-      <stop offset="45%" stop-color="#bfe0bb"/>
-      <stop offset="100%" stop-color="#93be99"/>
-    </linearGradient>
-    <linearGradient id="pinkFill" x1="0.25" y1="0" x2="0.8" y2="1">
-      <stop offset="0%" stop-color="#ffe3d1"/>
-      <stop offset="45%" stop-color="#f7c9b2"/>
-      <stop offset="100%" stop-color="#dda88d"/>
-    </linearGradient>
-    <linearGradient id="shade" x1="0" y1="0.35" x2="0" y2="1">
-      <stop offset="0%" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="72%" stop-color="#000000" stop-opacity="0.05"/>
-      <stop offset="100%" stop-color="#000000" stop-opacity="0.16"/>
-    </linearGradient>
-    <radialGradient id="spec" cx="0.32" cy="0.1" r="0.72">
-      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.92"/>
-      <stop offset="38%" stop-color="#ffffff" stop-opacity="0.26"/>
-      <stop offset="72%" stop-color="#ffffff" stop-opacity="0.05"/>
-      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
-    </radialGradient>
-    <linearGradient id="heartFill" x1="0.2" y1="0" x2="0.8" y2="1">
-      <stop offset="0%" stop-color="#e6eec5"/>
-      <stop offset="55%" stop-color="#c9d3a1"/>
-      <stop offset="100%" stop-color="#a7b283"/>
-    </linearGradient>
-    <filter id="drop" x="-40%" y="-40%" width="180%" height="180%">
-      <feDropShadow dx="0" dy="20" stdDeviation="28" flood-color="#08190f" flood-opacity="0.42"/>
-    </filter>
       <clipPath id="round"><rect width="1024" height="1024" rx="232" ry="232"/></clipPath>
   </defs>
   <g clip-path="url(#round)">
-
   <rect width="1024" height="1024" fill="url(#bg)"/>
-  <rect width="1024" height="1024" fill="url(#bgGlow)"/>
-
-  <g transform="translate(512 512) scale(1.0) translate(-512 -512)">
-    <g transform="rotate(8 715 652)" filter="url(#drop)">
-      <path d="M 486, 627 A 229 229 0 0 1 715, 398 L 715, 398 A 229 229 0 0 1 944, 627 L 944, 700 A 206 206 0 0 1 738, 906 L 692, 906 A 206 206 0 0 1 486, 700 Z" fill="url(#pinkFill)"/>
-      <path d="M 486, 627 A 229 229 0 0 1 715, 398 L 715, 398 A 229 229 0 0 1 944, 627 L 944, 700 A 206 206 0 0 1 738, 906 L 692, 906 A 206 206 0 0 1 486, 700 Z" fill="url(#shade)"/>
-      <path d="M 486, 627 A 229 229 0 0 1 715, 398 L 715, 398 A 229 229 0 0 1 944, 627 L 944, 700 A 206 206 0 0 1 738, 906 L 692, 906 A 206 206 0 0 1 486, 700 Z" fill="url(#spec)"/>
-      <path d="M 486, 627 A 229 229 0 0 1 715, 398 L 715, 398 A 229 229 0 0 1 944, 627 L 944, 700 A 206 206 0 0 1 738, 906 L 692, 906 A 206 206 0 0 1 486, 700 Z" fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="4"/>
-      <g fill="#9c7259">
-        <circle cx="672" cy="640" r="12"/>
-        <circle cx="762" cy="640" r="12"/>
-      </g>
-      <path d="M 686 686 Q 717 716 748 686" fill="none" stroke="#9c7259" stroke-width="9" stroke-linecap="round"/>
+  <g transform="translate(512 512) scale(1.08) translate(-512 -512)">
+    <g transform="rotate(7 688 664)">
+      <path d="M 468, 606 A 220 220 0 0 1 688, 386 L 688, 386 A 220 220 0 0 1 908, 606 L 908, 834 A 108 108 0 0 1 800, 942 L 576, 942 A 108 108 0 0 1 468, 834 Z" fill="#e7cfb9" stroke="#d5bfa8" stroke-width="8"/>
+      <circle cx="650" cy="647" r="11" fill="#aa917b"/>
+      <circle cx="726" cy="647" r="11" fill="#aa917b"/>
+      <path d="M 660 690 Q 688 714 716 690" fill="none" stroke="#aa917b" stroke-width="8" stroke-linecap="round"/>
     </g>
-
-    <g transform="rotate(-8 325 619)" filter="url(#drop)">
-      <path d="M 104, 557 A 221 221 0 0 1 325, 336 L 325, 336 A 221 221 0 0 1 546, 557 L 546, 702 A 200 200 0 0 1 346, 902 L 304, 902 A 200 200 0 0 1 104, 702 Z" fill="url(#greenFill)"/>
-      <path d="M 104, 557 A 221 221 0 0 1 325, 336 L 325, 336 A 221 221 0 0 1 546, 557 L 546, 702 A 200 200 0 0 1 346, 902 L 304, 902 A 200 200 0 0 1 104, 702 Z" fill="url(#shade)"/>
-      <path d="M 104, 557 A 221 221 0 0 1 325, 336 L 325, 336 A 221 221 0 0 1 546, 557 L 546, 702 A 200 200 0 0 1 346, 902 L 304, 902 A 200 200 0 0 1 104, 702 Z" fill="url(#spec)"/>
-      <path d="M 104, 557 A 221 221 0 0 1 325, 336 L 325, 336 A 221 221 0 0 1 546, 557 L 546, 702 A 200 200 0 0 1 346, 902 L 304, 902 A 200 200 0 0 1 104, 702 Z" fill="none" stroke="#ffffff" stroke-opacity="0.5" stroke-width="4"/>
-      <g fill="#5e7f5c">
-        <circle cx="282" cy="590" r="12"/>
-        <circle cx="368" cy="590" r="12"/>
-      </g>
-      <path d="M 296 634 Q 325 662 354 634" fill="none" stroke="#5e7f5c" stroke-width="9" stroke-linecap="round"/>
+    <g transform="rotate(-7 328 620)">
+      <path d="M 118, 510 A 210 210 0 0 1 328, 300 L 328, 300 A 210 210 0 0 1 538, 510 L 538, 840 A 100 100 0 0 1 438, 940 L 218, 940 A 100 100 0 0 1 118, 840 Z" fill="#c4d2b6" stroke="#acbfa0" stroke-width="8"/>
+      <circle cx="290" cy="588" r="11" fill="#7c896d"/>
+      <circle cx="366" cy="588" r="11" fill="#7c896d"/>
+      <path d="M 300 631 Q 328 655 356 631" fill="none" stroke="#7c896d" stroke-width="8" stroke-linecap="round"/>
     </g>
-
-    <g transform="rotate(15 612 262)">
+    <g transform="rotate(14 612 246)">
       <path d="M 0 46 C -14 30 -62 8 -62 -26 C -62 -56 -34 -70 -13 -55 C -5 -49 0 -38 0 -31 C 0 -38 5 -49 13 -55 C 34 -70 62 -56 62 -26 C 62 8 14 30 0 46 Z"
-            transform="translate(612 262) scale(1.26)" fill="url(#heartFill)"/>
-      <ellipse cx="592" cy="208" rx="19" ry="13" fill="#ffffff" opacity="0.5" transform="rotate(-24 592 208)"/>
+            transform="translate(612 246) scale(1.12)" fill="#b5b98f"/>
     </g>
   </g>
   </g>
