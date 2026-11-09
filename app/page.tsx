@@ -715,13 +715,14 @@ export default function Home() {
       // 新建：记录先落库，图片进模块级队列，避免「记录改了、图没对上」的中间态。
       const entryId = crypto.randomUUID();
       const files = entryPhotos.map((photo) => photo.file);
+      const cents = toCents(amount);
       await mutate({
         action: 'save',
         mode: 'create',
         entry: {
           id: entryId,
           type: entryType,
-          amount: toCents(amount),
+          amount: cents,
           ownerKey: selectedOwner,
           date,
           time: entryTime,
@@ -739,7 +740,7 @@ export default function Home() {
       setCategoryFilter('全部');
       if (date === data.today) {
         selectDay(data.today);
-        notify(pickRecordToast(entryType === 'income' ? 'income' : 'expense'));
+        notify(pickRecordToast(entryType, cents));
       } else {
         // 补记历史日期时首页看不到这一笔，切到账目并选到那一天。
         selectDay(date);
