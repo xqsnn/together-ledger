@@ -23,6 +23,15 @@ import {
   type UploadTask,
 } from '@/lib/upload-queue';
 import { chinaTime, toCents, type Entry, type OwnerKey } from '@/lib/ledger';
+import {
+  clearLedgerSnapshot,
+  mergeLedgerSnapshot,
+  readLedgerSnapshot,
+  removeCachedEntry,
+  updateCachedImages,
+  writeLedgerSnapshot,
+} from '@/lib/ledger-cache';
+import { useIsomorphicLayoutEffect } from '@/hooks/use-isomorphic-layout-effect';
 import type { MediaLimits, MediaMeta } from '@/lib/media';
 
 type LedgerEntry = Entry & { images: MediaMeta[] };
@@ -85,9 +94,12 @@ export default function EntryPage() {
     toastTimer.current = setTimeout(() => setToast(''), 3200);
   };
 
+  // 只取这一条记录：详情页要的归属 / 分类 / 头像 / 额度一并返回，
+  // 但不用为了看一笔账把整本账都拉下来。
   const load = useCallback(async (signal?: AbortSignal) => {
-    const response = await fetch('/api/ledger', { cache: 'no-store', signal });
+    const response = await fetch(`/api/ledger?entry=${encodeURIComponent(entryId)}`, { cache: 'no-store', signal });
     if (response.status === 401) {
+      clearLedgerSnapshot();
       setSession(null);
       setChecked(true);
       return;
@@ -96,27 +108,32 @@ export default function EntryPage() {
     if (!response.ok) throw new Error(result.error || '加载失败');
     if (signal?.aborted) return;
     setUploadLimits(result.mediaLimits);
-    setLedger({
-      ...result,
-      entries: result.entries.map((entry) => mergeUploadedMedia(entry.id, entry)),
-    });
+    // 上传完成可能比这次响应更早：把刚传好的图补回来，避免图片「闪没」。
+    const next = { ...result, entries: result.entries.map((entry) => mergeUploadedMedia(entry.id, entry)) };
+    // 页面自己只留这一条；缓存里是整本账，用这条覆盖对应项后仍然完整。
+    mergeLedgerSnapshot(next);
+    setLedger(next);
     setError('');
+  }, [entryId]);
+
+  // 从首页点进来时，账目已经在模块缓存里：先把这一笔画出来，再去后台核对。
+  useIsomorphicLayoutEffect(() => {
+    const cached = readLedgerSnapshot();
+    if (!cached) return;
+    setLedger(cached.ledger);
+    setSession(cached.session);
+    setChecked(true);
   }, []);
 
   useEffect(() => {
     const controller = new AbortController();
     (async () => {
       try {
-        const response = await fetch('/api/auth', { cache: 'no-store', signal: controller.signal });
-        const info = response.ok ? (await response.json()) as { session: AuthSession | null } : { session: null };
-        if (controller.signal.aborted) return;
-        setSession(info.session ?? null);
-        setChecked(true);
-        if (info.session) await load(controller.signal);
-      } catch {
+        await load(controller.signal);
+      } catch (caught) {
         if (!controller.signal.aborted) {
           setChecked(true);
-          setError('账本暂时无法加载，请重试');
+          setError(caught instanceof Error ? caught.message : '账本暂时无法加载，请重试');
         }
       }
     })();
@@ -188,6 +205,8 @@ export default function EntryPage() {
       if (!response.ok) throw new Error(result.error || '保存失败');
       setLedger(result);
       setUploadLimits(result.mediaLimits);
+      // 编辑返回的是整本账，顺手刷新缓存，返回首页看到的就是改完的样子。
+      writeLedgerSnapshot(result, session);
       setEditing(false);
       notify('已更新');
     } catch (caught) {
@@ -201,10 +220,11 @@ export default function EntryPage() {
     const response = await fetch(`/api/media?id=${encodeURIComponent(mediaId)}`, { method: 'DELETE' });
     const result = (await response.json()) as { error?: string };
     if (!response.ok) throw new Error(result.error || '删除图片失败');
-    setLedger((current) => current ? {
-      ...current,
-      entries: current.entries.map((item) => ({ ...item, images: item.images.filter((photo) => photo.id !== mediaId) })),
-    } : current);
+    if (!ledger) return;
+    const entries = ledger.entries.map((item) => ({ ...item, images: item.images.filter((photo) => photo.id !== mediaId) }));
+    const target = entries.find((item) => item.id === entryId);
+    if (target) updateCachedImages(entryId, target.images);
+    setLedger({ ...ledger, entries });
   }
 
   async function removeEntry() {
@@ -218,6 +238,7 @@ export default function EntryPage() {
       });
       const result = (await response.json()) as { error?: string };
       if (!response.ok) throw new Error(result.error || '删除失败');
+      removeCachedEntry(entry.id);
       router.replace('/');
     } catch (caught) {
       setDeleteBusy(false);

@@ -62,6 +62,11 @@ import { prefersReducedMotion } from '@/lib/motion';
 import PhotoPicker, { type PickedPhoto } from '@/components/photo-picker';
 import { MAX_ENTRY_IMAGES, type MediaLimits, type MediaMeta } from '@/lib/media';
 import {
+  clearLedgerSnapshot,
+  readLedgerSnapshot,
+  writeLedgerSnapshot,
+} from '@/lib/ledger-cache';
+import {
   enqueuePhotos,
   getServerSnapshot,
   getSnapshot,
@@ -105,6 +110,45 @@ const NARROW_QUERY = '(max-width: 560px)';
 // 同时写一份到 sessionStorage，刷新或从详情页返回也能回到原处。
 const SCROLL_STORE = 'ledger:scroll';
 const scrollPositions: Record<string, number> = {};
+
+// 页签和筛选状态同样记一份：从详情页返回、或整页刷新时，回到离开时那一页，
+// 而不是每次都被拉回「今天」。存 sessionStorage，关掉标签页就清掉。
+const UI_STORE = 'ledger:ui';
+type StoredUi = {
+  view: View;
+  recordMode: 'calendar' | 'list';
+  calendarSelection: { month: string; day: string } | null;
+  analysisMonth: string | null;
+  analysisOwner: OwnerKey | '全部';
+  owner: OwnerKey | '全部';
+  type: EntryFilter;
+  categoryFilter: string;
+};
+
+function readStoredUi(): Partial<StoredUi> {
+  try {
+    return JSON.parse(window.sessionStorage.getItem(UI_STORE) ?? '{}') as Partial<StoredUi>;
+  } catch {
+    /* 隐私模式下 sessionStorage 可能不可用，忽略即可。 */
+    return {};
+  }
+}
+
+function writeStoredUi(value: StoredUi) {
+  try {
+    window.sessionStorage.setItem(UI_STORE, JSON.stringify(value));
+  } catch {
+    /* 同上 */
+  }
+}
+
+function clearStoredUi() {
+  try {
+    window.sessionStorage.removeItem(UI_STORE);
+  } catch {
+    /* 同上 */
+  }
+}
 
 function hydrateScrollPositions() {
   try {
@@ -252,8 +296,11 @@ export default function Home() {
         if (response.status === 401) {
           // 登录态失效（过期或被改密踢下线）：退回登录页，并清掉账号页里残留的输入。
           sessionRef.current = null;
+          clearLedgerSnapshot();
           setSession(null);
           setSettingsSub(null);
+          setHasLoaded(false);
+          setLedger(blank);
           setCurrentPassword('');
           setNextPassword('');
           return;
@@ -274,16 +321,17 @@ export default function Home() {
   }, []);
 
   // 先确认登录态，再拉账目；未登录时不请求账本接口。
+  // failed 区分「确实没登录」和「网络没通」：后者不该把已登录的人踢回登录页。
   const checkSession = useCallback(async (signal?: AbortSignal) => {
     try {
       const response = await fetch('/api/auth', { cache: 'no-store', signal });
-      if (!response.ok) return false;
+      if (!response.ok) return { signedIn: false, failed: true };
       const result = (await response.json()) as { session: AuthSession | null };
       sessionRef.current = result.session ?? null;
       setSession(result.session ?? null);
-      return Boolean(result.session);
+      return { signedIn: Boolean(result.session), failed: false };
     } catch {
-      return false;
+      return { signedIn: false, failed: true };
     }
   }, []);
 
@@ -299,19 +347,52 @@ export default function Home() {
     void refresh();
   }, [refresh]);
 
+  // 先把「上次离开时的样子」摆上屏幕，再去后台核对数据：
+  // 1) 恢复页签、筛选和滚动位置；2) 用上次的账目快照同步渲染。
+  // 放在 layout effect 里，React 会在浏览器绘制前应用，不会看到中间的加载态。
+  useIsomorphicLayoutEffect(() => {
+    hydrateScrollPositions();
+    const stored = readStoredUi();
+    if (stored.view === 'records' || stored.view === 'analysis' || stored.view === 'settings') setView(stored.view);
+    if (stored.recordMode === 'list' || stored.recordMode === 'calendar') setRecordMode(stored.recordMode);
+    if (stored.calendarSelection) setCalendarSelection(stored.calendarSelection);
+    if (stored.analysisMonth) setAnalysisMonth(stored.analysisMonth);
+    if (stored.analysisOwner) setAnalysisOwner(stored.analysisOwner);
+    if (stored.owner) setOwner(stored.owner);
+    if (stored.type) setType(stored.type);
+    if (stored.categoryFilter) setCategoryFilter(stored.categoryFilter);
+
+    const cached = readLedgerSnapshot();
+    if (!cached) return;
+    setLedger(cached.ledger);
+    sessionRef.current = cached.session;
+    setSession(cached.session);
+    setAuthChecked(true);
+    setLoading(false);
+    setHasLoaded(true);
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setInterval> | null = null;
     const start = async () => {
-      const signedIn = await checkSession(controller.signal);
+      const check = await checkSession(controller.signal);
       if (controller.signal.aborted) return;
       setAuthChecked(true);
-      if (!signedIn) {
-        setLoading(false);
-        return;
+      if (!check.signedIn) {
+        // 网络没通时留着上次的快照继续用，等下一轮轮询再试；
+        // 真的没登录才清空并回到登录页。
+        if (!(check.failed && readLedgerSnapshot())) {
+          clearLedgerSnapshot();
+          setLedger(blank);
+          setHasLoaded(false);
+          setLoading(false);
+          return;
+        }
+      } else {
+        await refresh(controller.signal);
+        if (controller.signal.aborted) return;
       }
-      await refresh(controller.signal);
-      if (controller.signal.aborted) return;
       timer = setInterval(() => void refresh(controller.signal), 20000);
     };
     void start();
@@ -366,11 +447,20 @@ export default function Home() {
   const selectedDay = calendarSelection?.day ?? data.today;
   const dataReady = hasLoaded;
 
-  // 滚动位置记忆：切页签、从详情页返回都回到原处，贴近原生 App 的体验。
+  // 滚动位置记忆：切页签、从详情页返回、整页刷新都回到原处，贴近原生 App 的体验。
+  // 读取放在挂载时的 layout effect 里（见上），否则会在恢复滚动之后才读到，白读一次。
+  useEffect(() => saveScrollPositions, []);
+
+  // 页签和筛选也记一份，返回首页时不会从「今天」重新开始。
   useEffect(() => {
-    hydrateScrollPositions();
-    return saveScrollPositions;
-  }, []);
+    writeStoredUi({ view, recordMode, calendarSelection, analysisMonth, analysisOwner, owner, type, categoryFilter });
+  }, [view, recordMode, calendarSelection, analysisMonth, analysisOwner, owner, type, categoryFilter]);
+
+  // 账目一变就同步进模块缓存：路由跳走再由别的页面渲染时，数据已经在手上了。
+  useEffect(() => {
+    if (!hasLoaded) return;
+    writeLedgerSnapshot(ledger, sessionRef.current);
+  }, [ledger, hasLoaded]);
 
   useIsomorphicLayoutEffect(() => {
     if (!dataReady) return;
@@ -789,9 +879,13 @@ export default function Home() {
       // 网络失败也本地退出，避免卡在半登录状态。
     }
     sessionRef.current = null;
+    clearLedgerSnapshot();
+    clearStoredUi();
+    scrollPositions.today = 0;
     setSession(null);
     setHasLoaded(false);
     setLedger(blank);
+    setView('today');
     setSettingsSub(null);
     setCurrentPassword('');
     setNextPassword('');

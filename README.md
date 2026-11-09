@@ -20,6 +20,7 @@
 - 编辑 / 删除具有版本冲突检查。
 - 记一笔时可附图片（每条最多 9 张）。保存后**停留在首页**，图片在后台逐张上传，记录行显示上传进度；详情页也能补图。
 - 点记录进入详情页（`/entries/:id`）：上面是金额与备注，下面是三列缩略图，点开可全屏左右滑动并删除。图片不再占据页面顶部。
+- 页面之间不再闪加载态：账目和登录态在内存里留一份快照（`lib/ledger-cache.ts`），从详情页返回首页、或点进某一笔时先用快照同步渲染，再在后台静默核对；详情页只拉这一条记录（`/api/ledger?entry=:id`），不必为了看一笔账把整本账都读下来。缩略图 `loading="lazy" decoding="async"`，记录正文先出，图片各自补上。
 - 详情页可就地编辑（不跳页）和删除；`/entries/:id/edit` 已合并进详情页。
 
 ## 技术栈
@@ -50,6 +51,7 @@ pnpm run dev
 ## 手机端与安装
 
 - 布局是「固定外壳 + 内容滚动」：顶栏和底部导航钉住不动，只有中间内容区滚动；切页签各自记住滚动位置，从详情页返回也回到原处。相关样式见 `app/globals.css` 的 `.app-shell` / `.content-scroll` / `.entry-page`。
+- 顶部安全区（刘海 / 灵动岛 / 状态栏）不叠玻璃：首页顶栏和详情页顶栏都是整块干净的浅色面，没有 `backdrop-filter`，内容在安全区基础上再往下让 10–14px，顶部的时间和信号不会被糊住。改这两处时不要再把 `backdrop-filter` 加回去。
 - 可以「添加到主屏幕」当 App 用：`public/manifest.webmanifest` 声明 `display: standalone`，从主屏幕启动时全屏、没有地址栏，浏览器工具栏伸缩带来的页面位移也随之消失。iOS 走 `app/layout.tsx` 里的 `metadata.appleWebApp`，图标在 `public/icons/`。
 - `public/sw.js` 只缓存外壳与静态资源，`/api/*` 一律走网络；注册逻辑只在生产环境生效（`components/service-worker-registrar.tsx`），避免开发时把 Vite 的模块缓存成旧代码。
 - 验证安装效果要先 `pnpm run build && pnpm start`（Service Worker 只在 https 或 localhost 下可用），再在手机 Safari「分享 → 添加到主屏幕」。改过 `sw.js` 要同步升 `VERSION`，否则旧外壳会一直命中缓存。

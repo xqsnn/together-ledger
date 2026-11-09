@@ -91,10 +91,16 @@ function mediaLimits():MediaLimits{
  return {...IMAGE_LIMITS[mode],mode,maxPerEntry:MAX_ENTRY_IMAGES};
 }
 
-async function read(){
+/**
+ * @param entryId 只读单条记录（详情页用）：返回同样的结构，但 entries 里只有这一条。
+ * 详情页不需要整本账，翻几百条记录才能看到一笔太慢；这里让它只付一笔的代价。
+ */
+async function read(entryId?:string){
  const database=db();
  const [rows,categories,ownerList]=await Promise.all([
-  database.prepare('SELECT * FROM entries ORDER BY date DESC, created_at DESC, id DESC').all(),
+  entryId
+   ? database.prepare('SELECT * FROM entries WHERE id = ?').bind(entryId).all()
+   : database.prepare('SELECT * FROM entries ORDER BY date DESC, created_at DESC, id DESC').all(),
   readCategories(database),
   readOwners(database),
  ]);
@@ -106,7 +112,9 @@ async function read(){
  // 评论已下线：只读记录图片。历史评论图（entry_id 为空）不再返回给前端。
  let mediaRows:MediaRow[]=[];
  try{
-  const media=await database.prepare('SELECT id, entry_id, comment_id, width, height, bytes, thumb_bytes, created_at FROM media ORDER BY created_at, id').all<MediaRow>();
+  const media=entryId
+   ? await database.prepare('SELECT id, entry_id, comment_id, width, height, bytes, thumb_bytes, created_at FROM media WHERE entry_id = ? ORDER BY created_at, id').bind(entryId).all<MediaRow>()
+   : await database.prepare('SELECT id, entry_id, comment_id, width, height, bytes, thumb_bytes, created_at FROM media ORDER BY created_at, id').all<MediaRow>();
   mediaRows=media.results;
  }catch{}
  const mediaByEntry=new Map<string,MediaMeta[]>();
@@ -156,8 +164,10 @@ function mediaCleanupStatements(database:D1Database, rows:{id:string;storage:str
 export async function GET(request:Request){
  const session=await readSession(request);
  if(!session)return fail('UNAUTHORIZED','请先登录',401);
+ const entryId=new URL(request.url).searchParams.get('entry');
+ if(entryId!==null&&!isValidId(entryId))return fail('ENTRY_INVALID','记录无效',400);
  try{
-  const result=await read();
+  const result=await read(entryId??undefined);
   try{await drainDeletionsThrottled(db());}catch{}
   return reply(result,200,session.cookie);
  }

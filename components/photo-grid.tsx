@@ -13,8 +13,9 @@ export default function PhotoGrid({ photos, onOpen, onRemove, children }: Props)
       {photos.map((photo, index) => (
         <div className="photo-tile" key={photo.id}>
           <button type="button" className="photo-tile-open" onClick={() => onOpen(index)} aria-label={`查看第 ${index + 1} 张图片`}>
+            {/* 记录正文先出来，缩略图各自异步补上；固定比例占位，不会顶动布局。 */}
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={`/api/media?id=${encodeURIComponent(photo.id)}&v=thumb`} alt="" loading="lazy" draggable={false} />
+            <img src={`/api/media?id=${encodeURIComponent(photo.id)}&v=thumb`} alt="" loading="lazy" decoding="async" draggable={false} />
           </button>
           {onRemove && (
             <button type="button" className="photo-remove" aria-label="删除图片" onClick={() => onRemove(photo)}>
