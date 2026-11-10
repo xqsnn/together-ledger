@@ -3,7 +3,7 @@
  * 目标：让「添加到主屏幕」后启动接近原生——外壳秒开、断网也能先看到界面。
  * 红线：/api/* 一律不缓存，账目、登录态永远走网络，避免看到别人的或过期的数据。
  */
-const VERSION = 'v5';
+const VERSION = 'v6';
 const SHELL_CACHE = `ledger-shell-${VERSION}`;
 const ASSET_CACHE = `ledger-assets-${VERSION}`;
 const SHELL_URLS = [
@@ -42,19 +42,36 @@ self.addEventListener('fetch', (event) => {
   // 账目接口不缓存。
   if (url.pathname.startsWith('/api/')) return;
 
-  // 页面导航：先网络，断网时回退到上次缓存的首页外壳。
+  // 页面导航分两类：
+  // 1) 首页「/」：缓存秒回（Stale-While-Revalidate），点图标瞬间出外壳，
+  //    数据由页面脚本用本地快照 + 后台请求填充；同一时间后台拉新 HTML 供下次启动。
+  // 2) 其它路径（详情页等）：先网络，断网时回退到缓存的首页外壳。
   if (request.mode === 'navigate') {
+    if (url.pathname === '/') {
+      event.respondWith((async () => {
+        const cache = await caches.open(SHELL_CACHE);
+        const cached = await cache.match('/');
+        const network = fetch(request)
+          .then((response) => {
+            if (response.ok) cache.put('/', response.clone()).catch(() => {});
+            return response;
+          })
+          .catch(() => null);
+        if (cached) {
+          event.waitUntil(network);
+          return cached;
+        }
+        const response = await network;
+        return response || Response.error();
+      })());
+      return;
+    }
     event.respondWith((async () => {
       try {
-        const response = await fetch(request);
-        if (response.ok && url.pathname === '/') {
-          const cache = await caches.open(SHELL_CACHE);
-          cache.put('/', response.clone()).catch(() => {});
-        }
-        return response;
+        return await fetch(request);
       } catch {
-        const cached = await caches.match('/');
-        return cached || Response.error();
+        const cache = await caches.open(SHELL_CACHE);
+        return (await cache.match('/')) || Response.error();
       }
     })());
     return;

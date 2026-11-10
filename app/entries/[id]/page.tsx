@@ -42,11 +42,21 @@ type Ledger = {
   avatars: Partial<Record<OwnerKey, string>>;
   categories: { expense: string[]; income: string[] };
   owners: { key: OwnerKey; name: string }[];
+  /** 首屏请求合并：账本接口直接带回登录态。 */
+  session: AuthSession | null;
 };
 
 const money = (n: number) => (n / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const ownerClass = (key: string) => (key === 'qing' ? 'qing' : key === 'hua' ? 'hua' : 'together');
 const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
+
+/** 头像按版本号走 /api/avatars 强缓存；没有头像时回退默认图。 */
+function avatarUrlFor(avatars: Partial<Record<OwnerKey, string>> | undefined, key: OwnerKey | undefined) {
+  if (!key) return '';
+  const version = avatars?.[key];
+  if (version) return `/api/avatars?owner=${key}&v=${encodeURIComponent(version)}`;
+  return key === 'hua' ? '/huang.jpg' : '';
+}
 
 function dateLabel(value: string) {
   const [, month, day] = value.split('-').map(Number);
@@ -107,6 +117,8 @@ export default function EntryPage() {
     const result = (await response.json()) as Ledger & { error?: string };
     if (!response.ok) throw new Error(result.error || '加载失败');
     if (signal?.aborted) return;
+    // 服务端登录态比缓存更新时（例如另一台设备刚改过名字）以服务端为准。
+    if (result.session) setSession(result.session);
     setUploadLimits(result.mediaLimits);
     // 上传完成可能比这次响应更早：把刚传好的图补回来，避免图片「闪没」。
     const next = { ...result, entries: result.entries.map((entry) => mergeUploadedMedia(entry.id, entry)) };
@@ -120,7 +132,7 @@ export default function EntryPage() {
   useIsomorphicLayoutEffect(() => {
     const cached = readLedgerSnapshot();
     if (!cached) return;
-    setLedger(cached.ledger);
+    setLedger({ ...cached.ledger, session: cached.session });
     setSession(cached.session);
     setChecked(true);
   }, []);
@@ -268,7 +280,7 @@ export default function EntryPage() {
   }
 
   const ownerNames: Record<string, string> = Object.fromEntries((ledger?.owners ?? []).map((item) => [item.key, item.name]));
-  const avatar = ledger?.avatars?.[entry?.ownerKey ?? 'together'];
+  const avatar = avatarUrlFor(ledger?.avatars, entry?.ownerKey);
   const categoryList = ledger?.categories[editType] ?? [];
   const remaining = Math.max(0, (ledger?.mediaLimits?.maxPerEntry ?? 9) - (entry?.images.length ?? 0) - entryUploads.filter((task) => task.status !== 'error').length);
   // 代记：只有「谁记的」和「记在谁名下」不是同一人时才值得显示。
@@ -324,7 +336,7 @@ export default function EntryPage() {
             <span className="field-label">记在谁的名下</span>
             <div className="owner-choices">
               {ledger.owners.map((item) => {
-                const photo = ledger.avatars?.[item.key] ?? (item.key === 'hua' ? '/huang.jpg' : '');
+                const photo = avatarUrlFor(ledger.avatars, item.key);
                 return (
                   <button key={item.key} type="button" aria-pressed={editOwner === item.key} className={`${ownerClass(item.key)}${editOwner === item.key ? ' selected' : ''}`} onClick={() => setEditOwner(item.key)}>
                     <span className={`owner-choice-avatar ${ownerClass(item.key)}${photo ? ' has-photo' : ''}`}>

@@ -64,6 +64,7 @@ import { MAX_ENTRY_IMAGES, type MediaLimits, type MediaMeta } from '@/lib/media'
 import {
   clearLedgerSnapshot,
   readLedgerSnapshot,
+  removeCachedEntry,
   writeLedgerSnapshot,
 } from '@/lib/ledger-cache';
 import {
@@ -85,6 +86,8 @@ type Ledger = {
   avatars: Partial<Record<OwnerKey, string>>;
   categories: { expense: string[]; income: string[] };
   owners: OwnerInfo[];
+  /** 首屏请求合并：账本接口直接带回登录态，不用再单独打 /api/auth。 */
+  session: AuthSession | null;
 };
 type View = 'today' | 'records' | 'analysis' | 'settings';
 type EntryFilter = 'all' | Entry['type'];
@@ -103,6 +106,7 @@ const blank: Ledger = {
   avatars: {},
   categories: { expense: [...expenseCategories], income: [...incomeCategories] },
   owners: ownerKeys.map((key, index) => ({ key, name: owners[index] })),
+  session: null,
 };
 // 手机竖屏断点：与样式里的 560px 保持一致，用于决定归属胶囊是否显示名字。
 const NARROW_QUERY = '(max-width: 560px)';
@@ -214,7 +218,6 @@ export default function Home() {
   const [entryTime, setEntryTime] = useState(chinaTime());
   const [note, setNote] = useState('');
   const [formError, setFormError] = useState('');
-  const [busy, setBusy] = useState(false);
   const [avatarBusy, setAvatarBusy] = useState<OwnerKey | null>(null);
   // 登录态：session 为空时整页只渲染登录门禁。
   const [session, setSession] = useState<AuthSession | null>(null);
@@ -286,9 +289,12 @@ export default function Home() {
       setModalClosing(false);
     }, 260);
   }
-
   // 移动端底部弹层：从顶部抓手向下拖动即可关闭。
   const entrySheet = useSheetDrag(closeModal);
+
+  // 乐观记账还在后台落库的记录 id：轮询结果可能比 POST 更早回来，
+  // 不能让这些「本地已有、服务端还没有」的条目被刷新冲掉。
+  const pendingIds = useRef(new Set<string>());
 
   const refresh = useCallback((signal?: AbortSignal) => {
     return fetch('/api/ledger', { cache: 'no-store', signal })
@@ -296,6 +302,7 @@ export default function Home() {
         if (response.status === 401) {
           // 登录态失效（过期或被改密踢下线）：退回登录页，并清掉账号页里残留的输入。
           sessionRef.current = null;
+          pendingIds.current.clear();
           clearLedgerSnapshot();
           setSession(null);
           setSettingsSub(null);
@@ -303,36 +310,36 @@ export default function Home() {
           setLedger(blank);
           setCurrentPassword('');
           setNextPassword('');
+          setAuthChecked(true);
           return;
         }
         const result = (await response.json()) as Ledger & { error?: string };
         if (!response.ok) throw new Error(result.error || '加载失败');
         if (signal?.aborted) return;
+        // 首屏请求合并：登录态随账本一起回来。
+        if (result.session) {
+          sessionRef.current = result.session;
+          setSession(result.session);
+        }
         setUploadLimits(result.mediaLimits);
-        // 轮询响应可能比上传完成更早发出：把刚传好的图补回来，避免图片「闪没」。
-        setLedger({ ...result, entries: result.entries.map((entry) => mergeUploadedMedia(entry.id, entry)) });
+        setLedger((current) => {
+          // 乐观条目还没在服务端结果里出现时先补回去，避免「记了一笔又闪没」。
+          const pending = current.entries.filter((entry) => pendingIds.current.has(entry.id) && !result.entries.some((row) => row.id === entry.id));
+          return { ...result, entries: [...pending, ...result.entries.map((entry) => mergeUploadedMedia(entry.id, entry))] };
+        });
         setHasLoaded(true);
         setError('');
       })
       .catch((caught: unknown) => {
         if (!signal?.aborted) setError(caught instanceof Error ? caught.message : '加载失败');
       })
-      .finally(() => { if (!signal?.aborted) setLoading(false); });
-  }, []);
-
-  // 先确认登录态，再拉账目；未登录时不请求账本接口。
-  // failed 区分「确实没登录」和「网络没通」：后者不该把已登录的人踢回登录页。
-  const checkSession = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const response = await fetch('/api/auth', { cache: 'no-store', signal });
-      if (!response.ok) return { signedIn: false, failed: true };
-      const result = (await response.json()) as { session: AuthSession | null };
-      sessionRef.current = result.session ?? null;
-      setSession(result.session ?? null);
-      return { signedIn: Boolean(result.session), failed: false };
-    } catch {
-      return { signedIn: false, failed: true };
-    }
+      .finally(() => {
+        if (!signal?.aborted) {
+          setLoading(false);
+          // 就算这一轮网络失败也要给出结论：没有快照时让登录页自己显示「重新连接」。
+          setAuthChecked(true);
+        }
+      });
   }, []);
 
   const handleAuthenticated = useCallback((next: AuthSession) => {
@@ -364,7 +371,7 @@ export default function Home() {
 
     const cached = readLedgerSnapshot();
     if (!cached) return;
-    setLedger(cached.ledger);
+    setLedger({ ...cached.ledger, session: cached.session });
     sessionRef.current = cached.session;
     setSession(cached.session);
     setAuthChecked(true);
@@ -372,38 +379,26 @@ export default function Home() {
     setHasLoaded(true);
   }, []);
 
+  // 启动只有一个网络请求：/api/ledger（未登录自然 401 退回登录页）。
+  // 登录态与数据都随它回来，不再先串行打一遍 /api/auth 白等一个往返。
   useEffect(() => {
     const controller = new AbortController();
-    let timer: ReturnType<typeof setInterval> | null = null;
-    const start = async () => {
-      const check = await checkSession(controller.signal);
-      if (controller.signal.aborted) return;
-      setAuthChecked(true);
-      if (!check.signedIn) {
-        // 网络没通时留着上次的快照继续用，等下一轮轮询再试；
-        // 真的没登录才清空并回到登录页。
-        if (!(check.failed && readLedgerSnapshot())) {
-          clearLedgerSnapshot();
-          setLedger(blank);
-          setHasLoaded(false);
-          setLoading(false);
-          return;
-        }
-      } else {
-        await refresh(controller.signal);
-        if (controller.signal.aborted) return;
-      }
-      timer = setInterval(() => void refresh(controller.signal), 20000);
+    void refresh(controller.signal);
+    // 轮询只挑页面可见时进行：手机熄屏/切走时不唤醒网络，回到前台立即补一次。
+    const timer = setInterval(() => {
+      if (document.visibilityState !== 'visible' || !sessionRef.current) return;
+      void refresh(controller.signal);
+    }, 20000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && sessionRef.current) void refresh(controller.signal);
     };
-    void start();
-    const focus = () => { if (sessionRef.current) void refresh(controller.signal); };
-    window.addEventListener('focus', focus);
+    document.addEventListener('visibilitychange', onVisible);
     return () => {
       controller.abort();
-      if (timer) clearInterval(timer);
-      window.removeEventListener('focus', focus);
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [checkSession, refresh]);
+  }, [refresh]);
 
   useEffect(() => () => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -441,7 +436,13 @@ export default function Home() {
   const ownerNames = data.owners.map((item) => item.name);
   const ownerKeyByName = new Map(data.owners.map((item) => [item.name, item.key]));
   const ownerNameByKey = new Map(data.owners.map((item) => [item.key, item.name]));
-  const photoForOwner = (key: OwnerKey) => data.avatars?.[key] ?? (key === 'hua' ? '/huang.jpg' : '');
+  // 头像按版本号强缓存：账本里只有 updated_at 版本，字节从 /api/avatars 取，
+  // 换过头像版本号变化自动失效，其余时间手机本地秒出。
+  const photoForOwner = (key: OwnerKey) => {
+    const version = data.avatars?.[key];
+    if (!version) return key === 'hua' ? '/huang.jpg' : '';
+    return `/api/avatars?owner=${key}&v=${encodeURIComponent(version)}`;
+  };
   const currentMonth = data.today.slice(0, 7);
   const month = view === 'analysis' ? (analysisMonth ?? currentMonth) : (calendarSelection?.month ?? currentMonth);
   const selectedDay = calendarSelection?.day ?? data.today;
@@ -648,7 +649,11 @@ export default function Home() {
       throw new Error(result.error || '保存失败');
     }
     setUploadLimits(result.mediaLimits);
-    setLedger({ ...result, entries: result.entries.map((entry) => mergeUploadedMedia(entry.id, entry)) });
+    setLedger((current) => {
+      // 与 refresh 同样地保护还在后台落库的乐观条目。
+      const pending = current.entries.filter((entry) => pendingIds.current.has(entry.id) && !result.entries.some((row) => row.id === entry.id));
+      return { ...result, entries: [...pending, ...result.entries.map((entry) => mergeUploadedMedia(entry.id, entry))] };
+    });
     setHasLoaded(true);
     return result;
   }
@@ -796,53 +801,85 @@ export default function Home() {
     }
   }
 
-  async function save(event: React.FormEvent) {
+  function save(event: React.FormEvent) {
     event.preventDefault();
     setFormError('');
-    setBusy(true);
-    try {
-      if (!selectedOwner) throw new Error('请选择这笔账的归属');
-      // 新建：记录先落库，图片进模块级队列，避免「记录改了、图没对上」的中间态。
-      const entryId = crypto.randomUUID();
-      const files = entryPhotos.map((photo) => photo.file);
-      const cents = toCents(amount);
-      await mutate({
-        action: 'save',
-        mode: 'create',
-        entry: {
-          id: entryId,
-          type: entryType,
-          amount: cents,
-          ownerKey: selectedOwner,
-          date,
-          time: entryTime,
-          note,
-          category: entryCategory,
-        },
-      });
-      entryPhotos.forEach((photo) => URL.revokeObjectURL(photo.preview));
-      setEntryPhotos([]);
-      closeModal();
-      // 图片交给模块级队列在首页后台传，不再跳详情页。
-      if (files.length) enqueuePhotos(entryId, files, 0, notify);
-      setOwner('全部');
-      setType('all');
-      setCategoryFilter('全部');
-      if (date === data.today) {
-        selectDay(data.today);
-        notify(pickRecordToast(entryType, cents));
-      } else {
-        // 补记历史日期时首页看不到这一笔，切到账目并选到那一天。
-        selectDay(date);
-        goTo('records', { top: true });
-        setRecordMode('list');
-        notify(`已记到 ${dateLabel(date)}`);
-      }
-    } catch (caught) {
-      setFormError(caught instanceof Error ? caught.message : '保存失败');
-    } finally {
-      setBusy(false);
+    if (!selectedOwner) {
+      setFormError('请选择这笔账的归属');
+      return;
     }
+    let cents: number;
+    try {
+      cents = toCents(amount);
+    } catch (caught) {
+      setFormError(caught instanceof Error ? caught.message : '金额无效');
+      return;
+    }
+    // 乐观记账：先关弹窗、先上屏，再让网络在后台走。
+    // 手机弱网/电梯断网时也「秒记」，失败再撤回并提示。
+    const entryId = crypto.randomUUID();
+    const files = entryPhotos.map((photo) => photo.file);
+    const optimistic: LedgerEntry = {
+      id: entryId,
+      type: entryType,
+      amount: cents,
+      owner: ownerNameByKey.get(selectedOwner) ?? selectedOwner,
+      ownerKey: selectedOwner,
+      createdBy: sessionRef.current?.ownerKey ?? null,
+      date,
+      time: entryTime,
+      note,
+      category: entryCategory,
+      revision: 1,
+      createdAt: new Date().toISOString(),
+      images: [],
+    };
+    pendingIds.current.add(entryId);
+    setLedger((current) => ({ ...current, entries: [optimistic, ...current.entries] }));
+    setHasLoaded(true);
+    entryPhotos.forEach((photo) => URL.revokeObjectURL(photo.preview));
+    setEntryPhotos([]);
+    closeModal();
+    // 图片交给模块级队列在首页后台传，不再跳详情页。
+    if (files.length) enqueuePhotos(entryId, files, 0, notify);
+    setOwner('全部');
+    setType('all');
+    setCategoryFilter('全部');
+    if (date === data.today) {
+      selectDay(data.today);
+      notify(pickRecordToast(entryType, cents));
+    } else {
+      // 补记历史日期时首页看不到这一笔，切到账目并选到那一天。
+      selectDay(date);
+      goTo('records', { top: true });
+      setRecordMode('list');
+      notify(`已记到 ${dateLabel(date)}`);
+    }
+    // 后台落库：成功时服务端整份账目会覆盖乐观条目；失败撤回并提示。
+    void mutate({
+      action: 'save',
+      mode: 'create',
+      entry: {
+        id: entryId,
+        type: entryType,
+        amount: cents,
+        ownerKey: selectedOwner,
+        date,
+        time: entryTime,
+        note,
+        category: entryCategory,
+      },
+    })
+      .catch((caught: unknown) => {
+        pendingIds.current.delete(entryId);
+        setLedger((current) => ({ ...current, entries: current.entries.filter((entry) => entry.id !== entryId) }));
+        removeCachedEntry(entryId);
+        notify(caught instanceof Error ? caught.message : '保存失败，请重试');
+        void refresh();
+      })
+      .finally(() => {
+        pendingIds.current.delete(entryId);
+      });
   }
 
   async function callAuth(body: Record<string, unknown>) {
@@ -1351,12 +1388,12 @@ export default function Home() {
         </div>
       </main>
 
-      <dialog ref={dialogRef} aria-labelledby="entry-dialog-title" className={`modal${modalClosing ? ' is-closing' : ''}${entrySheet.dragging ? ' is-dragging' : ''}`} style={entrySheet.style} onCancel={(event) => { event.preventDefault(); if (!busy) closeModal(); }} onClick={(event) => { if (event.target === event.currentTarget && !busy) closeModal(); }}>
+      <dialog ref={dialogRef} aria-labelledby="entry-dialog-title" className={`modal${modalClosing ? ' is-closing' : ''}${entrySheet.dragging ? ' is-dragging' : ''}`} style={entrySheet.style} onCancel={(event) => { event.preventDefault(); closeModal(); }} onClick={(event) => { if (event.target === event.currentTarget) closeModal(); }}>
         <div className="modal-inner">
           <span className="modal-grabber" aria-hidden="true" {...entrySheet.handleProps} />
           <div className="modal-head">
             <div><h2 id="entry-dialog-title" className={modal === 'categories' ? 'visually-hidden' : undefined}>{modal === 'categories' ? '分类管理' : '记下这一笔'}</h2></div>
-            <button className="icon-button" aria-label="关闭" disabled={busy} onClick={closeModal}><X size={21} /></button>
+            <button className="icon-button" aria-label="关闭" onClick={closeModal}><X size={21} /></button>
           </div>
           {modal === 'categories' ? renderCategoryManager() : (
             <form onSubmit={save}>
@@ -1387,10 +1424,11 @@ export default function Home() {
               <div className="form-field"><span>发生日期</span><DatePicker value={date} max={ledger.today} onChange={pickEntryDate} /></div>
               <div className="form-field"><span>发生时间</span><TimePicker value={entryTime} max={date === ledger.today ? chinaTime() : undefined} onChange={setEntryTime} /></div>
 
-              <div className="form-field entry-photo-field"><span>照片<span className="optional">选填，最多 {MAX_ENTRY_IMAGES} 张</span></span><PhotoPicker photos={entryPhotos} onChange={setEntryPhotos} max={MAX_ENTRY_IMAGES} disabled={busy} onReject={notify} /></div>
+              <div className="form-field entry-photo-field"><span>照片<span className="optional">选填，最多 {MAX_ENTRY_IMAGES} 张</span></span><PhotoPicker photos={entryPhotos} onChange={setEntryPhotos} max={MAX_ENTRY_IMAGES} onReject={notify} /></div>
 
               {formError && <p className="form-error" role="alert">{formError}</p>}
-              <div className="modal-actions"><button className="primary" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <Check size={18} />} {busy ? '保存中…' : '保存'}</button></div>
+              {/* 保存是乐观更新：点下即关弹窗、先上屏，网络在后台走。 */}
+              <div className="modal-actions"><button className="primary" type="submit"><Check size={18} />保存</button></div>
             </form>
           )}
         </div>

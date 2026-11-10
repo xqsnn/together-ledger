@@ -191,7 +191,9 @@ export async function GET(request: Request) {
     const headers: Record<string, string> = {
       'Content-Type': serve === 'thumb' ? (row.thumb_mime || row.mime) : row.mime,
       ETag: `"${id}-${serve}-${bytes}"`,
-      'Cache-Control': 'private, max-age=0, must-revalidate',
+      // 图片按 id 寻址、内容不可变（换图 = 换 id），手机看过的图永久本地缓存，
+      // 详情页二次打开不再逐张向服务器验证。
+      'Cache-Control': 'private, max-age=31536000, immutable',
       'X-Content-Type-Options': 'nosniff',
       'Content-Security-Policy': "default-src 'none'",
       'Content-Disposition': 'inline',

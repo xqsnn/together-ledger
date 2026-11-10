@@ -12,9 +12,9 @@ import { drainDeletionsThrottled, storageMode } from '@/lib/media-store';
 import { readSession } from '@/lib/auth-server';
 export const dynamic='force-dynamic';
 // 一本共享账本：所有登录成员看到同一份数据，登录只用来区分「谁在记账」。
+// 首屏请求合并：GET 响应里直接带上 session，客户端不用再先打一遍 /api/auth。
 
 type EntryRow={id:string;type:string;amount:number;owner:string;created_by?:string|null;date:string;time?:string;note:string;category?:string;revision:number;created_at:string};
-type AvatarRow={owner:string;data:string};
 type CategoryRow={type:string;name:string;position:number};
 type OwnerRow={key:string;name:string;position:number};
 type MediaRow={id:string;entry_id:string|null;comment_id:string|null;width:number;height:number;bytes:number;thumb_bytes:number;created_at:string};
@@ -52,17 +52,26 @@ async function ensureCategories(database:D1Database){
  ]);
 }
 
+function rowsToCategories(rows:CategoryRow[]):{expense:string[];income:string[]}{
+ const categories:{expense:string[];income:string[]}={expense:[],income:[]};
+ rows.forEach((row)=>{
+  if(row.type==='expense')categories.expense.push(row.name);
+  else if(row.type==='income')categories.income.push(row.name);
+ });
+ if(!categories.expense.length)categories.expense=[...expenseCategories];
+ if(!categories.income.length)categories.income=[...incomeCategories];
+ return categories;
+}
+
 async function readCategories(database:D1Database):Promise<{expense:string[];income:string[]}>{
  try{
-  await ensureCategories(database);
   const rows=await database.prepare('SELECT type, name, position FROM categories ORDER BY type, position, name').all();
-  const categories:{expense:string[];income:string[]}={expense:[],income:[]};
-  (rows.results as CategoryRow[]).forEach((row)=>{
-   if(row.type==='expense')categories.expense.push(row.name);
-   else if(row.type==='income')categories.income.push(row.name);
-  });
-  if(!categories.expense.length)categories.expense=[...expenseCategories];
-  if(!categories.income.length)categories.income=[...incomeCategories];
+  const categories=rowsToCategories(rows.results as CategoryRow[]);
+  // 空表只在首次部署出现：先补默认分类再读一遍，平时零额外查询。
+  if(categories.expense.length===0&&categories.income.length===0){
+   await ensureCategories(database);
+   return rowsToCategories((await database.prepare('SELECT type, name, position FROM categories ORDER BY type, position, name').all()).results as CategoryRow[]);
+  }
   return categories;
  }catch{
   return {expense:[...expenseCategories],income:[...incomeCategories]};
@@ -77,10 +86,15 @@ async function ensureOwners(database:D1Database){
 
 async function readOwners(database:D1Database):Promise<{key:OwnerKey;name:string}[]>{
  try{
-  await ensureOwners(database);
   const rows=await database.prepare('SELECT key, name, position FROM owners ORDER BY position').all();
   const owners=(rows.results as OwnerRow[]).map((row)=>({key:row.key as OwnerKey,name:row.name}));
-  return owners.length?owners:DEFAULT_OWNERS;
+  // 空表只在首次部署出现：先补默认归属再读一遍，平时零额外查询。
+  if(owners.length){
+   return owners;
+  }
+  await ensureOwners(database);
+  const again=(await database.prepare('SELECT key, name, position FROM owners ORDER BY position').all()).results as OwnerRow[];
+  return again.length?again.map((row)=>({key:row.key as OwnerKey,name:row.name})):DEFAULT_OWNERS;
  }catch{
   return DEFAULT_OWNERS;
  }
@@ -94,38 +108,50 @@ function mediaLimits():MediaLimits{
 /**
  * @param entryId 只读单条记录（详情页用）：返回同样的结构，但 entries 里只有这一条。
  * 详情页不需要整本账，翻几百条记录才能看到一笔太慢；这里让它只付一笔的代价。
+ *
+ * 五路查询（entries / categories / owners / avatars / media）合并进一次 D1 batch，
+ * 一次网络往返全部拿到；头像是低频变更数据，这里只回版本号（updated_at），
+ * 图片字节由 /api/avatars 按版本强缓存下发，账本 JSON 不再背着几百 KB 的 base64。
  */
 async function read(entryId?:string){
  const database=db();
- const [rows,categories,ownerList]=await Promise.all([
+ const mediaStatement=entryId
+  ? database.prepare('SELECT id, entry_id, comment_id, width, height, bytes, thumb_bytes, created_at FROM media WHERE entry_id = ? ORDER BY created_at, id').bind(entryId)
+  : database.prepare('SELECT id, entry_id, comment_id, width, height, bytes, thumb_bytes, created_at FROM media ORDER BY created_at, id');
+ const batched=await database.batch([
   entryId
-   ? database.prepare('SELECT * FROM entries WHERE id = ?').bind(entryId).all()
-   : database.prepare('SELECT * FROM entries ORDER BY date DESC, created_at DESC, id DESC').all(),
-  readCategories(database),
-  readOwners(database),
+   ? database.prepare('SELECT * FROM entries WHERE id = ?').bind(entryId)
+   : database.prepare('SELECT * FROM entries ORDER BY date DESC, created_at DESC, id DESC'),
+  database.prepare('SELECT type, name, position FROM categories ORDER BY type, position, name'),
+  database.prepare('SELECT key, name, position FROM owners ORDER BY position'),
+  database.prepare('SELECT owner, updated_at FROM avatars'),
+  mediaStatement,
  ]);
+ const [entryResult,categoryResult,ownerResult,avatarResult,mediaResult]=batched;
+ let categories=rowsToCategories(categoryResult.results as CategoryRow[]);
+ if(!categories.expense.length&&!categories.income.length){
+  await ensureCategories(database);
+  categories=await readCategories(database);
+ }
+ let ownerList=(ownerResult.results as OwnerRow[]).map((row)=>({key:row.key as OwnerKey,name:row.name}));
+ if(!ownerList.length){
+  await ensureOwners(database);
+  ownerList=await readOwners(database);
+ }
+ // 头像只下发版本号，客户端用它拼 /api/avatars?owner=…&v=… 的强缓存地址。
  const avatars:Record<string,string>={};
- try{
-  const avatarRows=await database.prepare('SELECT owner, data FROM avatars').all();
-  (avatarRows.results as AvatarRow[]).forEach((a)=>{if(a.owner&&a.data)avatars[resolveOwnerKey(a.owner,ownerList)]=a.data;});
- }catch{}
- // 评论已下线：只读记录图片。历史评论图（entry_id 为空）不再返回给前端。
- let mediaRows:MediaRow[]=[];
- try{
-  const media=entryId
-   ? await database.prepare('SELECT id, entry_id, comment_id, width, height, bytes, thumb_bytes, created_at FROM media WHERE entry_id = ? ORDER BY created_at, id').bind(entryId).all<MediaRow>()
-   : await database.prepare('SELECT id, entry_id, comment_id, width, height, bytes, thumb_bytes, created_at FROM media ORDER BY created_at, id').all<MediaRow>();
-  mediaRows=media.results;
- }catch{}
+ (avatarResult.results as {owner:string;updated_at:string}[]).forEach((a)=>{
+  if(a.owner)avatars[resolveOwnerKey(a.owner,ownerList)]=a.updated_at??'';
+ });
  const mediaByEntry=new Map<string,MediaMeta[]>();
- mediaRows.forEach((row)=>{
+ (mediaResult.results as MediaRow[]).forEach((row)=>{
   if(!row.entry_id)return;
   const meta:MediaMeta={id:row.id,width:Number(row.width),height:Number(row.height),bytes:Number(row.bytes),thumbBytes:Number(row.thumb_bytes)};
   mediaByEntry.set(row.entry_id,[...(mediaByEntry.get(row.entry_id)??[]),meta]);
  });
  const ownerNameByKey=new Map(ownerList.map((owner)=>[owner.key,owner.name]));
  return {
-  entries:(rows.results as EntryRow[]).map((r)=>{
+  entries:(entryResult.results as EntryRow[]).map((r)=>{
    const ownerKey=resolveOwnerKey(r.owner,ownerList);
    // 存量记录没有 created_by：归属是具体某人就当作本人记的，「共同」无法判断，留空。
    const createdBy=r.created_by?resolveOwnerKey(r.created_by,ownerList):(ownerKey==='together'?null:ownerKey);
@@ -169,7 +195,8 @@ export async function GET(request:Request){
  try{
   const result=await read(entryId??undefined);
   try{await drainDeletionsThrottled(db());}catch{}
-  return reply(result,200,session.cookie);
+  // session 随账本一起下发：客户端冷启动只需这一个请求，少一次跨洋往返。
+  return reply({...result,session:{ownerKey:session.ownerKey,name:session.name}},200,session.cookie);
  }
  catch(e){console.error(e);return fail('SERVER_ERROR','账本暂时无法连接，请重试',503);}
 }
